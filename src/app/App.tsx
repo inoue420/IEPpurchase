@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { Box, Paper, Typography } from '@mui/material'
+import { AuthGate } from '../features/auth/AuthGate'
 
 function PreparationPage() {
   return (
@@ -13,5 +14,5 @@ function PreparationPage() {
 }
 
 export default function App() {
-  return <Routes><Route path="/" element={<PreparationPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes>
+  return <AuthGate><Routes><Route path="/" element={<PreparationPage />} /><Route path="*" element={<Navigate to="/" replace />} /></Routes></AuthGate>
 }

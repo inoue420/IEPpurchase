@@ -36,3 +36,23 @@ npm run dev
 
 ## セキュリティ
 `.env`、秘密鍵、サービスアカウントJSON、API Secret等はGitHubへコミットしない。
+
+### Firebase設定
+
+1. Firebase ConsoleでWebアプリを作成し、Authentication（Email/Password）、Cloud Firestore、Cloud Storageを有効化します。
+2. `.env.example` を `.env.local` にコピーします。
+3. Firebase ConsoleのWebアプリ設定値を、`VITE_FIREBASE_*` の各環境変数に設定します。
+
+`.env.local` はGit管理されません。サービスアカウント鍵や外部APIの秘密情報は配置しません。
+
+### Firebase Emulator（任意）
+
+`.env.local` の `VITE_USE_FIREBASE_EMULATORS=true` で、Authentication（9099）、Firestore（8080）、Storage（9199）へ接続します。Emulator設定・Security Rulesは、それぞれの実装タスクで追加します。
+
+### 品質確認
+
+```bash
+npm run typecheck
+npm run lint
+npm run build
+```

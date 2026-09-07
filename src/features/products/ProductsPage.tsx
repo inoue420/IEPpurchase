@@ -4,14 +4,15 @@ import { ProductDialog } from './ProductDialog'
 import { normalizePartNumber } from './productSchema'
 import { productError } from './productError'
 import { setProductActive, subscribeProducts, type Product } from './productRepository'
+import { includesSearchText, normalizeSearchText } from '../../utils/searchText'
 export function ProductsPage() {
   const [products, setProducts] = useState<Product[]>([]), [loading, setLoading] = useState(true), [loadError, setLoadError] = useState<string | null>(null), [retry, setRetry] = useState(0), [search, setSearch] = useState(''), [includeInactive, setIncludeInactive] = useState(false), [editing, setEditing] = useState<Product | null | undefined>(undefined), [confirming, setConfirming] = useState<Product | null>(null), [busy, setBusy] = useState(false), [actionError, setActionError] = useState<string | null>(null), [notice, setNotice] = useState<string | null>(null); const submitting = useRef(false)
   useEffect(() => subscribeProducts(next => { setProducts(next); setLoading(false); setLoadError(null) }, cause => { setLoadError(productError(cause)); setLoading(false) }), [retry])
   const visibleProducts = useMemo(() => {
-    const keyword = search.normalize('NFKC').trim().toLocaleLowerCase('ja-JP')
+    const keyword = normalizeSearchText(search)
     const partKeyword = normalizePartNumber(search)
     return products.filter(product => (includeInactive || product.active) && (!keyword ||
-      [product.manufacturerName, product.partNumber, product.name, product.janCode, product.category, product.notes].some(value => value.normalize('NFKC').toLocaleLowerCase('ja-JP').includes(keyword)) ||
+      [product.manufacturerName, product.partNumber, product.name, product.janCode, product.category, product.notes].some(value => includesSearchText(value, keyword)) ||
       (partKeyword.length > 0 && normalizePartNumber(product.partNumber).includes(partKeyword))))
   }, [products, search, includeInactive])
   async function toggleActive() { if (!confirming || submitting.current) return; submitting.current = true; setBusy(true); setActionError(null); try { await setProductActive(confirming.id, !confirming.active); setNotice(confirming.active ? '商品を無効にしました。' : '商品を有効に戻しました。'); setConfirming(null) } catch (cause: unknown) { setActionError(productError(cause)) } finally { submitting.current = false; setBusy(false) } }

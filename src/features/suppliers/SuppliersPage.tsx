@@ -3,6 +3,7 @@ import { Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, Dial
 import { setSupplierActive, subscribeSuppliers, type Supplier } from './supplierRepository'
 import { SupplierDialog } from './SupplierDialog'
 import { supplierError } from './supplierError'
+import { includesSearchText, normalizeSearchText } from '../../utils/searchText'
 
 export function SuppliersPage() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
@@ -25,10 +26,10 @@ export function SuppliersPage() {
   }), [retry])
 
   const visibleSuppliers = useMemo(() => {
-    const keyword = search.trim().toLocaleLowerCase('ja-JP')
+    const keyword = normalizeSearchText(search)
     return suppliers.filter(supplier => (includeInactive || supplier.active) &&
       (!keyword || [supplier.name, supplier.contactName, supplier.email, supplier.phone, supplier.postalCode, supplier.address, supplier.notes]
-        .some(value => value.toLocaleLowerCase('ja-JP').includes(keyword))))
+        .some(value => includesSearchText(value, keyword))))
   }, [suppliers, search, includeInactive])
 
   async function toggleActive() {

@@ -6,6 +6,33 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function validSupplier(data) {
+      return data.keys().hasAll(['name', 'contactName', 'email', 'phone', 'postalCode', 'address', 'notes', 'active', 'createdAt', 'updatedAt', 'archivedAt'])
+        && data.keys().hasOnly(['name', 'contactName', 'email', 'phone', 'postalCode', 'address', 'notes', 'active', 'createdAt', 'updatedAt', 'archivedAt'])
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 200
+        && data.contactName is string && data.contactName.size() <= 200
+        && data.email is string && data.email.size() <= 254
+        && data.phone is string && data.phone.size() <= 50
+        && data.postalCode is string && data.postalCode.size() <= 20
+        && data.address is string && data.address.size() <= 1000
+        && data.notes is string && data.notes.size() <= 5000
+        && data.active is bool && data.createdAt is timestamp
+        && data.updatedAt == request.time
+        && ((data.active && data.archivedAt == null) || (!data.active && data.archivedAt is timestamp));
+    }
+
+    match /suppliers/{supplierId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && validSupplier(request.resource.data)
+        && request.resource.data.createdAt == request.time && request.resource.data.active == true;
+      allow update: if isSignedIn() && validSupplier(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (request.resource.data.active
+          || (resource.data.active && request.resource.data.archivedAt == request.time)
+          || (!resource.data.active && request.resource.data.archivedAt == resource.data.archivedAt));
+      allow delete: if false;
+    }
+
     match /customers/{customerId} {
       allow get, list: if isSignedIn();
       allow create, update: if isSignedIn();

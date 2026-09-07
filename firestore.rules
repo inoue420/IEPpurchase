@@ -59,5 +59,27 @@ service cloud.firestore {
         && (request.resource.data.active || (resource.data.active && request.resource.data.archivedAt == request.time) || (!resource.data.active && request.resource.data.archivedAt == resource.data.archivedAt));
       allow delete: if false;
     }
+    function validRfq(data) {
+      return data.keys().hasOnly(['rfqNumber', 'customerId', 'customerName', 'subject', 'receivedAt', 'dueDate', 'requestedDeliveryDate', 'status', 'assignedUserId', 'note', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+        && data.keys().hasAll(['rfqNumber', 'customerId', 'customerName', 'subject', 'receivedAt', 'dueDate', 'requestedDeliveryDate', 'status', 'assignedUserId', 'note', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+        && data.rfqNumber is string && data.rfqNumber.matches('RFQ-[0-9]{4}-[0-9]{6}')
+        && data.customerId is string && data.customerId.size() > 0 && data.customerName is string && data.customerName.size() > 0 && data.customerName.size() <= 200
+        && data.subject is string && data.subject.size() > 0 && data.subject.size() <= 500 && data.receivedAt is timestamp
+        && (data.dueDate == null || data.dueDate is timestamp) && (data.requestedDeliveryDate == null || data.requestedDeliveryDate is timestamp)
+        && data.status in ['received', 'sourcing', 'quoting', 'quoted', 'ordered', 'purchasing', 'received_goods', 'delivered', 'completed', 'cancelled']
+        && data.assignedUserId is string && data.assignedUserId.size() <= 128 && data.note is string && data.note.size() <= 5000
+        && data.createdAt is timestamp && data.updatedAt == request.time && data.createdBy is string && data.updatedBy == request.auth.uid;
+    }
+    match /rfqs/{rfqId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && validRfq(request.resource.data) && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isSignedIn() && validRfq(request.resource.data) && request.resource.data.rfqNumber == resource.data.rfqNumber && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy;
+      allow delete: if false;
+    }
+    match /rfqCounters/{year} {
+      allow get: if isSignedIn();
+      allow create, update: if isSignedIn() && request.resource.data.keys().hasOnly(['year', 'nextSequence', 'updatedAt']) && request.resource.data.year == year && request.resource.data.nextSequence is int && request.resource.data.nextSequence > 0 && request.resource.data.updatedAt == request.time;
+      allow delete, list: if false;
+    }
   }
 }

@@ -76,6 +76,63 @@ service cloud.firestore {
       allow update: if isSignedIn() && validRfq(request.resource.data) && request.resource.data.rfqNumber == resource.data.rfqNumber && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy;
       allow delete: if false;
     }
+
+    match /rfqs/{rfqId}/itemCounters/{counterId} {
+      function validCounter() {
+        let d = request.resource.data;
+        return counterId == 'sequence'
+          && exists(/databases/$(database)/documents/rfqs/$(rfqId))
+          && d.keys().hasAll(['lastLineNo', 'updatedAt'])
+          && d.keys().hasOnly(['lastLineNo', 'updatedAt'])
+          && d.lastLineNo is int && d.lastLineNo > 0 && d.lastLineNo <= 2147483647
+          && d.updatedAt == request.time;
+      }
+      allow get: if isSignedIn();
+      allow create: if isSignedIn() && validCounter() && request.resource.data.lastLineNo == 1;
+      allow update: if isSignedIn() && validCounter()
+        && request.resource.data.lastLineNo == resource.data.lastLineNo + 1;
+      allow list, delete: if false;
+    }
+    match /rfqs/{rfqId}/items/{itemId} {
+      function validItem(d) {
+        return d.keys().hasAll(['lineNo', 'originalDescription', 'translatedDescription', 'productId', 'manufacturerId', 'manufacturerName', 'partNumber', 'productName', 'quantity', 'unit', 'requestedDeliveryDate', 'status', 'note', 'createdAt', 'updatedAt', 'archivedAt'])
+          && d.keys().hasOnly(['lineNo', 'originalDescription', 'translatedDescription', 'productId', 'manufacturerId', 'manufacturerName', 'partNumber', 'productName', 'quantity', 'unit', 'requestedDeliveryDate', 'status', 'note', 'createdAt', 'updatedAt', 'archivedAt'])
+          && d.lineNo is int && d.lineNo > 0
+          && d.originalDescription is string && d.originalDescription.size() > 0 && d.originalDescription.size() <= 5000
+          && d.translatedDescription is string && d.translatedDescription.size() <= 5000
+          && d.productId is string && d.productId.size() <= 128
+          && d.manufacturerId is string && d.manufacturerId.size() <= 128
+          && d.manufacturerName is string && d.manufacturerName.size() <= 200
+          && d.partNumber is string && d.partNumber.size() <= 200
+          && d.productName is string && d.productName.size() <= 500
+          && d.quantity is number && d.quantity > 0 && d.quantity <= 1000000000
+          && d.unit is string && d.unit.size() > 0 && d.unit.size() <= 50
+          && (d.requestedDeliveryDate == null || d.requestedDeliveryDate is timestamp)
+          && d.status in ['pending', 'sourcing', 'quoted', 'ordered', 'received', 'cancelled']
+          && d.note is string && d.note.size() <= 5000
+          && d.createdAt is timestamp && d.updatedAt == request.time
+          && (d.archivedAt == null || d.archivedAt is timestamp);
+      }
+      function validNewLine() {
+        let counterPath = /databases/$(database)/documents/rfqs/$(rfqId)/itemCounters/sequence;
+        return getAfter(counterPath).data.updatedAt == request.time
+          && request.resource.data.lineNo == getAfter(counterPath).data.lastLineNo
+          && ((!exists(counterPath) && request.resource.data.lineNo == 1)
+            || (exists(counterPath) && request.resource.data.lineNo == get(counterPath).data.lastLineNo + 1));
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && exists(/databases/$(database)/documents/rfqs/$(rfqId))
+        && validItem(request.resource.data) && validNewLine()
+        && request.resource.data.createdAt == request.time && request.resource.data.archivedAt == null;
+      allow update: if isSignedIn() && exists(/databases/$(database)/documents/rfqs/$(rfqId))
+        && validItem(request.resource.data)
+        && request.resource.data.lineNo == resource.data.lineNo
+        && request.resource.data.createdAt == resource.data.createdAt
+        && ((resource.data.archivedAt == null && request.resource.data.archivedAt == null)
+          || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['archivedAt', 'updatedAt'])
+            && (request.resource.data.archivedAt == null || request.resource.data.archivedAt == request.time)));
+      allow delete: if false;
+    }
     match /rfqCounters/{year} {
       allow get: if isSignedIn();
       allow create, update: if isSignedIn() && request.resource.data.keys().hasOnly(['year', 'nextSequence', 'updatedAt']) && request.resource.data.year == year && request.resource.data.nextSequence is int && request.resource.data.nextSequence > 0 && request.resource.data.updatedAt == request.time;

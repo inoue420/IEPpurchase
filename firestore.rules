@@ -38,5 +38,26 @@ service cloud.firestore {
       allow create, update: if isSignedIn();
       allow delete: if false;
     }
+
+    match /products/{productId} {
+      function validProduct() {
+        let d = request.resource.data;
+        return d.keys().hasAll(['manufacturerId', 'manufacturerName', 'partNumber', 'normalizedPartNumber', 'name', 'janCode', 'category', 'unit', 'notes', 'active', 'createdAt', 'updatedAt', 'archivedAt'])
+          && d.keys().hasOnly(['manufacturerId', 'manufacturerName', 'partNumber', 'normalizedPartNumber', 'name', 'janCode', 'category', 'unit', 'notes', 'active', 'createdAt', 'updatedAt', 'archivedAt'])
+          && d.manufacturerId is string && d.manufacturerName is string && d.manufacturerName.size() > 0 && d.manufacturerName.size() <= 200
+          && d.partNumber is string && d.partNumber.size() > 0 && d.partNumber.size() <= 200
+          && d.normalizedPartNumber is string && d.normalizedPartNumber.size() > 0 && d.normalizedPartNumber.size() <= 600
+          && d.name is string && d.name.size() > 0 && d.name.size() <= 500
+          && d.janCode is string && (d.janCode == '' || d.janCode.matches('[0-9]{8}|[0-9]{13}'))
+          && d.category is string && d.category.size() <= 200 && d.unit is string && d.unit.size() > 0 && d.unit.size() <= 50
+          && d.notes is string && d.notes.size() <= 5000 && d.active is bool && d.createdAt is timestamp && d.updatedAt == request.time
+          && ((d.active && d.archivedAt == null) || (!d.active && d.archivedAt is timestamp));
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && validProduct() && request.resource.data.createdAt == request.time && request.resource.data.active;
+      allow update: if isSignedIn() && validProduct() && request.resource.data.createdAt == resource.data.createdAt
+        && (request.resource.data.active || (resource.data.active && request.resource.data.archivedAt == request.time) || (!resource.data.active && request.resource.data.archivedAt == resource.data.archivedAt));
+      allow delete: if false;
+    }
   }
 }

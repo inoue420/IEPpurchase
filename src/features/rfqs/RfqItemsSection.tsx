@@ -4,6 +4,7 @@ import { RfqItemDialog } from './RfqItemDialog'
 import { setRfqItemArchived, subscribeRfqItemProducts, subscribeRfqItems, type RfqItem, type RfqItemProduct } from './rfqItemRepository'
 import { rfqItemStatusLabels } from './rfqItemSchema'
 import { rfqError } from './rfqError'
+import { includesSearchText, normalizeSearchText } from '../../utils/searchText'
 
 export function RfqItemsSection({ rfqId }: { rfqId: string }) {
   const [items, setItems] = useState<RfqItem[]>([])
@@ -22,8 +23,8 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
   const submitting = useRef(false)
   useEffect(() => subscribeRfqItems(rfqId, next => { setItems(next); setLoading(false); setLoadError(null) }, cause => { setLoadError(rfqError(cause)); setLoading(false) }), [rfqId, retry])
   useEffect(() => subscribeRfqItemProducts(next => { setProducts(next); setProductError(null) }, cause => setProductError(rfqError(cause))), [retry])
-  const keyword = search.normalize('NFKC').trim().toLowerCase()
-  const visible = items.filter(item => (showArchived || !item.archivedAt) && (!keyword || [item.originalDescription, item.translatedDescription, item.manufacturerName, item.partNumber, item.productName, item.note].some(value => value.normalize('NFKC').toLowerCase().includes(keyword))))
+  const keyword = normalizeSearchText(search)
+  const visible = items.filter(item => (showArchived || !item.archivedAt) && (!keyword || [item.originalDescription, item.translatedDescription, item.manufacturerName, item.partNumber, item.productName, item.note].some(value => includesSearchText(value, keyword))))
   async function archive() {
     if (!confirming || submitting.current) return
     submitting.current = true; setBusy(true); setActionError(null)

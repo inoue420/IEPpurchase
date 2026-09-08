@@ -3,68 +3,44 @@
 ## プロジェクト
 IEPpurchase 資材調達管理システム
 
-## 現在Phase
-Phase 1 - 基盤実装
+## 現在Phase・状態
+Phase 2 — IEP-P2-001 対象範囲・データ設計確認（ユーザーレビュー待ち）。
 
-## 状態
-未着手 / 初期セットアップ段階
+2026-09-08の依頼に基づき設計確認へ着手。正式管理シートにはPhase 1完了のユーザー申告がある一方、P1-012は保留。
+auditLogs・/dashboardは現コードでも未実装であり、Phase 1完成を断定しない。差異の扱いはユーザー確認待ち。
+[IEP-P2-001設計書](IEP-P2-001.md)に対象範囲・データ案・受入条件を記載。今回の変更は資料のみ。
 
-## Phase 1の目的
-外部API連携を行う前に、業務データを管理する基盤を作る。
-
-### Phase 1対象
-- Firebase接続確認
-- Authentication基盤（必要範囲）
-- customers
-- suppliers
-- products
-- rfqs
-- rfqItems
-- 一覧 / 詳細 / 登録 / 編集
-- 基本検索
-- バリデーション
-- Firestore保存
-- 最低限のSecurity Rules
-- TypeScript / lint / build確認
-
-### Phase 1対象外
-- 楽天API
-- Amazon API
-- freee API
-- AI / OCR
-- メール自動取込
-- 自動翻訳
-- 仕入先への自動見積メール送信
-- 発注自動化
-- 納品自動連携
-- 月次販売分析の本実装
-
-## 現在完了済み
-- 要件定義書作成
-- コード仕様書作成
-- Phase 1初回実装プロンプト作成
-- 開発運用方針決定
-
-## 次の作業
-1. `C:\projects\IEPpurchase` にプロジェクトを配置
-2. VS Codeで開く
-3. GitHubリポジトリへ接続
-4. Codexにプロジェクト構成を確認させる
-5. Phase 1実装計画を提示させる
-6. 小単位で実装・動作確認を開始
-
-## 運用ルール
-各機能の実装後にユーザーが実機 / ブラウザで動作確認する。
-OK後に次の機能へ進む。
-
-Phase完了時に:
-- 管理シート
-- CURRENT_STATUS.md
-- 必要に応じてREADME / ARCHITECTURE
-を更新する。
+## 完了記録と確認事実
+- 正式管理シートでIEP-P1-001〜011、013の完了記録を確認（2026-09-08）。
+- React / TypeScript / Vite、Firebase接続、Email/Password認証。
+- customers / suppliers / products / rfqs / RFQ品目CRUD・検索・入力検証。
+- RFQ案件/品目採番、users.active/roleによるFirestore認可、Rulesテスト。
+- Storage Rules・Emulator設定。本番バケット作成/Rulesデプロイは保留記録あり。
+- 過去の自動/ユーザー確認結果は正式管理シートを参照し、今回の検証結果とは区別する。
 
 ## 未解決事項
-現時点では特になし。
+- Phase 1完了申告とP1-012保留の差異。auditLogsと/dashboardの不足を先に解消するか、別管理して進むか要確認。
+- ARCHITECTUREの概略名rfqItems/activityLogsと正式仕様の差異。実装の品目パスはrfqs/{rfqId}/items/{rfqItemId}、履歴は正式仕様のauditLogsを参照する。
+- Phase 2の税区分・端数処理・送料配賦・期限切れ候補の扱いは設計案レビュー待ち。
+- P2-007のサーバー実行環境/費用条件とP2-009の本番Storage条件は導入前に確認。
+- 楽天/Amazonの認証準備はP2-013/014で段階案内。手入力は取得待ちにしない。
+
+## 次の作業
+1. IEP-P2-001の設計案とPhase 1差異の扱いをユーザーレビュー。
+2. 回答を反映し、ユーザーOK後に正式管理シートのP2-001を完了へ変更。
+3. 合意した前提でP2-002（仕入先見積依頼管理・手動記録）の1機能のみ実装。
+
+## 運用
+1機能ごとに実装・自動確認・ユーザー動作確認を行い、OK後に次へ進む。
+Phase 3以降の先行実装、実メール/本番外部送信、課金有効化は行わない。
+進捗の正式記録は[Google Drive開発管理シート](https://docs.google.com/spreadsheets/d/1hXh2UDbJEP-6rBLrEY8fFtzL3k4_Ad7x9dHl0Tidng8/edit)。
+正式要件・コード仕様PDFは明示依頼なく変更しない。
 
 ## 最終更新
-2026-09-07
+2026-09-08（正式資料・管理シート・現コード照合。完了判定の変更なし）
+## 認可方針の変更（2026-09-09・ユーザー明示指示）
+ログイン済みの全ユーザーを同じアプリ権限で扱う。users文書の存在・active・roleはアクセス条件に使用しない。
+未ログイン拒否、各コレクションの入力検証、作成者と作成日時の保持、物理削除禁止は維持。
+仕入先見積依頼は作成者以外のログインユーザーも編集可能。
+firestore.rulesをieppurchaseへデプロイ済み。Firestore Emulator Rulesテスト80件成功、単体テスト48件成功。
+過去のusers.active/role必須という記述より本項を優先。ユーザーのRFQアクセス再確認待ち。

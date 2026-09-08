@@ -93,7 +93,7 @@ beforeEach(async () => {
 afterAll(async () => { await env?.cleanup() })
 
 describe('company access boundary', () => {
-  it.each(['unauthenticated', 'unregistered', 'disabled', 'disabled-admin', 'unknown-role'])(
+  it.each(['unauthenticated'])(
     '%s cannot read or write any business collection', async identity => {
       const db = identity === 'unauthenticated' ? env.unauthenticatedContext().firestore() : dbFor(identity)
       for (const [path, factory] of documents) {
@@ -105,7 +105,7 @@ describe('company access boundary', () => {
       }
     },
   )
-  it.each(['admin', 'member'])('%s can read business records but cannot physically delete them', async uid => {
+  it.each(['admin', 'member', 'unregistered', 'disabled', 'disabled-admin', 'unknown-role'])('%s can read business records but cannot physically delete them', async uid => {
     const db = dbFor(uid)
     for (const [path] of documents) {
       await assertSucceeds(getDoc(doc(db, path)))
@@ -127,55 +127,48 @@ describe('company access boundary', () => {
       await assertFails(setDoc(doc(db, path), { value: true }))
     }
   })
-  it('takes account deactivation into effect with the same authenticated context', async () => {
+  it('does not use profile active status for application access', async () => {
     const db = dbFor('member')
     await assertSucceeds(getDoc(doc(db, 'customers/existing')))
     await assertSucceeds(updateDoc(doc(dbFor('admin'), 'users/member'), {
       active: false, updatedAt: serverTimestamp(),
     }))
-    await assertFails(getDoc(doc(db, 'customers/existing')))
-    await assertFails(setDoc(doc(db, 'customers/new'), contact()))
+    await assertSucceeds(getDoc(doc(db, 'customers/existing')))
+    await assertSucceeds(setDoc(doc(db, 'customers/new'), contact()))
   })
 })
 
-describe('user privileges', () => {
-  it('allows own profile read but not reading/listing other users as member', async () => {
-    const db = dbFor('member')
-    await assertSucceeds(getDoc(doc(db, 'users/member')))
-    await assertFails(getDoc(doc(db, 'users/admin')))
-    await assertFails(getDocs(collection(db, 'users')))
-    await assertSucceeds(getDocs(collection(dbFor('admin'), 'users')))
-  })
-  it.each(['member', 'unregistered', 'disabled-admin'])('%s cannot self-provision, elevate or manage users', async uid => {
+describe('authenticated user access', () => {
+  it.each(['member', 'unregistered', 'disabled-admin'])('%s may manage valid profile data without role-based permissions', async uid => {
     const db = dbFor(uid)
-    await assertFails(setDoc(doc(db, 'users/new'), {
-      ...profile('admin'), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-    }))
-    await assertFails(setDoc(doc(db, 'users', uid), {
-      ...profile('admin'), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
-    }))
-    await assertFails(updateDoc(doc(db, 'users/member'), { role: 'admin', updatedAt: serverTimestamp() }))
-    await assertFails(deleteDoc(doc(db, 'users/member')))
-  })
-  it('admin can provision and change another user, but cannot deactivate/demote self or delete users', async () => {
-    const db = dbFor('admin')
+    await assertSucceeds(getDoc(doc(db, 'users/admin')))
+    await assertSucceeds(getDocs(collection(db, 'users')))
     await assertSucceeds(setDoc(doc(db, 'users/new'), {
       ...profile(), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
     }))
-    await assertSucceeds(updateDoc(doc(db, 'users/new'), { role: 'admin', updatedAt: serverTimestamp() }))
     await assertSucceeds(updateDoc(doc(db, 'users/new'), { active: false, updatedAt: serverTimestamp() }))
-    await assertFails(updateDoc(doc(db, 'users/admin'), { active: false, updatedAt: serverTimestamp() }))
-    await assertFails(updateDoc(doc(db, 'users/admin'), { role: 'member', updatedAt: serverTimestamp() }))
     await assertFails(deleteDoc(doc(db, 'users/new')))
+  })
+  it('allows a user without a profile to create and edit an RFQ', async () => {
+    const db = dbFor('unregistered')
+    const ref = doc(db, 'rfqs/new')
+    await assertSucceeds(setDoc(ref, { ...rfq(), createdBy: 'unregistered', updatedBy: 'unregistered' }))
+    await assertSucceeds(updateDoc(ref, { subject: '更新', updatedAt: serverTimestamp(), updatedBy: 'unregistered' }))
+    await assertSucceeds(getDocs(query(collection(db, 'rfqs'), orderBy('receivedAt'))))
+  })
+  it('rejects anonymous profile reads and writes', async () => {
+    const db = env.unauthenticatedContext().firestore()
+    await assertFails(getDoc(doc(db, 'users/member')))
+    await assertFails(getDocs(collection(db, 'users')))
+    await assertFails(setDoc(doc(db, 'users/new'), { ...profile(), createdAt: serverTimestamp(), updatedAt: serverTimestamp() }))
   })
   it.each([
     { role: 'owner' }, { active: 'true' }, { unexpected: true },
     { createdAt: serverTimestamp() }, { updatedAt: past }, { displayName: deleteField() },
-  ])('rejects malformed user updates: %j', async change => {
-    await assertFails(updateDoc(doc(dbFor('admin'), 'users/member'), { updatedAt: serverTimestamp(), ...change }))
+  ])('preserves profile data validation: %j', async change => {
+    await assertFails(updateDoc(doc(dbFor('member'), 'users/admin'), { updatedAt: serverTimestamp(), ...change }))
   })
 })
-
 describe.each([['customers', contact], ['suppliers', contact], ['products', product]] as const)(
   '%s lifecycle', (path, factory) => {
     it('supports member create, edit, archive and restore with immutable creation time', async () => {
@@ -281,5 +274,43 @@ describe('RFQ items', () => {
     await assertFails(updateDoc(doc(dbFor('member'), 'rfqs/existing/items/existing'), {
       updatedAt: serverTimestamp(), ...change,
     }))
+  })
+})
+
+describe('supplier quote requests', () => {
+  const request = () => ({
+    rfqId: 'existing', supplierId: 'existing', supplierName: '取引先', rfqItemIds: ['existing'],
+    requestedAt: null, responseDueDate: null, status: 'draft', note: '',
+    createdAt: serverTimestamp(), createdBy: 'member', updatedAt: serverTimestamp(), updatedBy: 'member',
+  })
+  it('allows valid records and rejects invalid relationships or unauthenticated access', async () => {
+    const ref = doc(dbFor('member'), 'supplierQuoteRequests', 'new')
+    await assertSucceeds(setDoc(ref, request()))
+    await assertSucceeds(updateDoc(ref, { status: 'requested', requestedAt: serverTimestamp(), updatedAt: serverTimestamp(), updatedBy: 'member' }))
+    await assertFails(setDoc(doc(dbFor('member'), 'supplierQuoteRequests', 'bad-rfq'), { ...request(), rfqId: 'missing' }))
+    await assertFails(setDoc(doc(env.unauthenticatedContext().firestore(), 'supplierQuoteRequests', 'anon'), request()))
+  })
+  it('rejects immutable RFQ and creator changes, invalid dates and physical deletion', async () => {
+    const ref = doc(dbFor('member'), 'supplierQuoteRequests', 'new')
+    await assertSucceeds(setDoc(ref, request()))
+    await assertFails(updateDoc(ref, { rfqId: 'other', updatedAt: serverTimestamp(), updatedBy: 'member' }))
+    await assertFails(updateDoc(ref, { createdBy: 'admin', updatedAt: serverTimestamp(), updatedBy: 'member' }))
+    await assertFails(updateDoc(ref, { status: 'requested', requestedAt: null, updatedAt: serverTimestamp(), updatedBy: 'member' }))
+    await assertFails(deleteDoc(ref))
+  })
+})
+describe('supplier request access without a users profile', () => {
+  it('allows another logged-in user to edit while preserving original creator', async () => {
+    const ref = doc(dbFor('member'), 'supplierQuoteRequests/shared')
+    await assertSucceeds(setDoc(ref, {
+      rfqId: 'existing', supplierId: 'existing', supplierName: '取引先', rfqItemIds: ['existing'],
+      requestedAt: null, responseDueDate: null, status: 'draft', note: '',
+      createdAt: serverTimestamp(), createdBy: 'member', updatedAt: serverTimestamp(), updatedBy: 'member',
+    }))
+    const other = doc(dbFor('unregistered'), 'supplierQuoteRequests/shared')
+    await assertSucceeds(getDoc(other))
+    await assertSucceeds(updateDoc(other, { note: '他の利用者による更新', updatedAt: serverTimestamp(), updatedBy: 'unregistered' }))
+    await assertFails(updateDoc(other, { createdBy: 'unregistered', updatedAt: serverTimestamp(), updatedBy: 'unregistered' }))
+    await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), 'supplierQuoteRequests/shared')))
   })
 })

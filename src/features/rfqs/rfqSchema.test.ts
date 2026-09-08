@@ -12,7 +12,6 @@ describe('rfqSchema', () => {
     expect(rfqSchema.safeParse({ ...validInput, receivedAt: '2026-99-99' }).success).toBe(false)
     expect(rfqSchema.safeParse({ ...validInput, dueDate: '2026/09/10' }).success).toBe(false)
   })
-
   it('rejects dates before the RFQ received date', () => {
     expect(rfqSchema.safeParse({ ...validInput, dueDate: '2026-09-07' }).success).toBe(false)
     expect(rfqSchema.safeParse({ ...validInput, requestedDeliveryDate: '2026-09-07' }).success).toBe(false)

@@ -3,7 +3,36 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function isSignedIn() {
-      return request.auth != null;
+      // Authentication alone does not grant access to company data.
+      return request.auth != null
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.active == true
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'member'];
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /users/{userId} {
+      function validUser(d) {
+        return d.keys().hasAll(['email', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'])
+          && d.keys().hasOnly(['email', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'])
+          && d.email is string && d.email.size() > 0 && d.email.size() <= 254
+          && d.displayName is string && d.displayName.size() <= 200
+          && d.role in ['admin', 'member'] && d.active is bool
+          && d.createdAt is timestamp && d.updatedAt == request.time;
+      }
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin() && validUser(request.resource.data)
+        && request.resource.data.createdAt == request.time;
+      allow update: if isAdmin() && validUser(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (request.auth.uid != userId
+          || (request.resource.data.role == 'admin' && request.resource.data.active));
+      allow delete: if false;
     }
 
     function validSupplier(data) {
@@ -35,7 +64,14 @@ service cloud.firestore {
 
     match /customers/{customerId} {
       allow get, list: if isSignedIn();
-      allow create, update: if isSignedIn();
+      // Customers and suppliers share the same contact and lifecycle fields.
+      allow create: if isSignedIn() && validSupplier(request.resource.data)
+        && request.resource.data.createdAt == request.time && request.resource.data.active == true;
+      allow update: if isSignedIn() && validSupplier(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && (request.resource.data.active
+          || (resource.data.active && request.resource.data.archivedAt == request.time)
+          || (!resource.data.active && request.resource.data.archivedAt == resource.data.archivedAt));
       allow delete: if false;
     }
 
@@ -72,7 +108,8 @@ service cloud.firestore {
     }
     match /rfqs/{rfqId} {
       allow get, list: if isSignedIn();
-      allow create: if isSignedIn() && validRfq(request.resource.data) && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid;
+      allow create: if isSignedIn() && validRfq(request.resource.data)
+        && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid;
       allow update: if isSignedIn() && validRfq(request.resource.data) && request.resource.data.rfqNumber == resource.data.rfqNumber && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy;
       allow delete: if false;
     }
@@ -134,9 +171,23 @@ service cloud.firestore {
       allow delete: if false;
     }
     match /rfqCounters/{year} {
+      function validCounter() {
+        let d = request.resource.data;
+        return year.matches('[0-9]{4}')
+          && d.keys().hasAll(['year', 'nextSequence', 'updatedAt'])
+          && d.keys().hasOnly(['year', 'nextSequence', 'updatedAt'])
+          && d.year == year && d.nextSequence is int
+          && d.nextSequence > 0 && d.nextSequence <= 999999
+          && d.updatedAt == request.time;
+      }
       allow get: if isSignedIn();
-      allow create, update: if isSignedIn() && request.resource.data.keys().hasOnly(['year', 'nextSequence', 'updatedAt']) && request.resource.data.year == year && request.resource.data.nextSequence is int && request.resource.data.nextSequence > 0 && request.resource.data.updatedAt == request.time;
+      allow create: if isSignedIn() && validCounter() && request.resource.data.nextSequence == 1;
+      allow update: if isSignedIn() && validCounter()
+        && request.resource.data.nextSequence == resource.data.nextSequence + 1;
       allow delete, list: if false;
+    }
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

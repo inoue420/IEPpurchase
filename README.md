@@ -47,7 +47,9 @@ npm run dev
 
 ### Firebase Emulator（任意）
 
-`.env.local` の `VITE_USE_FIREBASE_EMULATORS=true` で、Authentication（9099）、Firestore（8080）、Storage（9199）へ接続します。Emulator設定・Security Rulesは、それぞれの実装タスクで追加します。
+`.env.local` の `VITE_USE_FIREBASE_EMULATORS=true` で、Authentication（9099）、Firestore（8080）、Storage（9199）へ接続します。Firestore と Storage の Emulator 設定・Security Rulesを管理しています。
+
+Storageへの添付は `rfqs/{rfqId}/{fileName}` に限定します。ログイン済みユーザーはPDF・画像・Excel形式（10MB以下）を新規アップロード・参照できます。既存ファイルの更新・削除および上記以外のパスは拒否します。
 
 ### 品質確認
 

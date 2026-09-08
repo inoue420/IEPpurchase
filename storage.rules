@@ -1,0 +1,29 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAllowedAttachment() {
+      return request.resource.size > 0
+        && request.resource.size <= 10 * 1024 * 1024
+        && request.resource.contentType.matches(
+          'application/pdf|image/.*|application/vnd.ms-excel|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        );
+    }
+
+    // Phase 1 keeps RFQ attachments immutable. Future document metadata will
+    // reference this path from Firestore instead of storing file bytes there.
+    match /rfqs/{rfqId}/{fileName} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isAllowedAttachment();
+      allow update, delete: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

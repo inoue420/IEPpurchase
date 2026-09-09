@@ -190,7 +190,33 @@ service cloud.firestore {
         && request.resource.data.createdBy == resource.data.createdBy;
       allow delete: if false;
     }
+    match /documents/{documentId} {
+      function validDocument(d) {
+        let quotePath = /databases/$(database)/documents/supplierQuotes/$(d.entityId);
+        return d.keys().hasAll(['fileName', 'storagePath', 'mimeType', 'fileSize', 'documentType', 'entityType', 'entityId', 'rfqId', 'uploadedBy', 'createdAt'])
+          && d.keys().hasOnly(['fileName', 'storagePath', 'mimeType', 'fileSize', 'documentType', 'entityType', 'entityId', 'rfqId', 'uploadedBy', 'createdAt'])
+          && d.fileName is string && d.fileName.size() > 0 && d.fileName.size() <= 500
+          && d.storagePath == 'rfqs/' + d.rfqId + '/' + documentId
+          && d.mimeType is string && d.mimeType.matches('application/pdf|image/.*|application/vnd.ms-excel|application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+          && d.fileSize is int && d.fileSize > 0 && d.fileSize <= 10 * 1024 * 1024
+          && d.documentType == 'supplier_quote' && d.entityType == 'supplierQuote'
+          && d.entityId is string && d.entityId.size() > 0 && d.entityId.size() <= 128
+          && d.rfqId is string && d.rfqId.size() > 0 && d.rfqId.size() <= 128
+          && exists(quotePath) && get(quotePath).data.rfqId == d.rfqId
+          && d.uploadedBy == request.auth.uid && d.createdAt == request.time;
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && validDocument(request.resource.data);
+      allow update, delete: if false;
+    }
     match /supplierQuotes/{quoteId} {
+      function validDocumentReference(d) {
+        let documentPath = /databases/$(database)/documents/documents/$(d.documentId);
+        return exists(documentPath)
+          && get(documentPath).data.rfqId == d.rfqId
+          && get(documentPath).data.entityType == 'supplierQuote'
+          && get(documentPath).data.entityId == quoteId;
+      }
       function validSupplierQuote(d) {
         return d.keys().hasAll(['rfqId', 'supplierId', 'supplierName', 'requestId', 'quoteNumber', 'quoteDate', 'validUntil', 'documentId', 'subtotal', 'tax', 'total', 'status', 'note', 'revision', 'archivedAt', 'archivedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
           && d.keys().hasOnly(['rfqId', 'supplierId', 'supplierName', 'requestId', 'quoteNumber', 'quoteDate', 'validUntil', 'documentId', 'subtotal', 'tax', 'total', 'status', 'note', 'revision', 'archivedAt', 'archivedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'itemCount', 'shippingTotal', 'lastItemId'])
@@ -200,7 +226,7 @@ service cloud.firestore {
           && (d.requestId == null || (d.requestId is string && exists(/databases/$(database)/documents/supplierQuoteRequests/$(d.requestId)) && get(/databases/$(database)/documents/supplierQuoteRequests/$(d.requestId)).data.rfqId == d.rfqId && get(/databases/$(database)/documents/supplierQuoteRequests/$(d.requestId)).data.supplierId == d.supplierId))
           && d.quoteNumber is string && d.quoteNumber.size() > 0 && d.quoteNumber.size() <= 200
           && (d.quoteDate == null || d.quoteDate is timestamp) && (d.validUntil == null || d.validUntil is timestamp) && (d.quoteDate == null || d.validUntil == null || d.validUntil >= d.quoteDate)
-          && (d.documentId == null || (d.documentId is string && d.documentId.size() <= 128))
+          && (d.documentId == null || (d.documentId is string && d.documentId.size() > 0 && d.documentId.size() <= 128 && validDocumentReference(d)))
           && d.subtotal is int && d.tax is int && d.total is int && d.subtotal >= 0 && d.tax >= 0 && d.total == d.subtotal + d.tax && d.total <= 1000000000000
           && d.status in ['draft', 'valid', 'withdrawn'] && d.note is string && d.note.size() <= 5000 && d.revision is int && d.revision > 0 && d.archivedAt == null && d.archivedBy == null
           && d.createdAt is timestamp && d.createdBy is string && d.updatedAt == request.time && d.updatedBy == request.auth.uid;

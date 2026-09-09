@@ -4,9 +4,9 @@
 IEPpurchase 資材調達管理システム
 
 ## 現在Phase・状態
-Phase 2 — IEP-P2-006 品目別購入候補一覧・比較画面（完了）。
+Phase 2 — IEP-P2-009 仕入先見積書添付（実装完了・本番反映／ユーザー確認待ち）。
 
-仕入先見積明細とEC購入候補をRFQ品目単位で統合表示し、総額・単価・納期の並べ替え、未確認・期限切れ・数量条件差、空状態を実装。自動確認・ユーザー動作確認ともにOK。購入先採用・数量分割はP2-007で実装する。
+仕入先見積へPDF・画像・Excelを10MB上限で添付し、文書メタデータ、参照、見積版履歴、再紐付け、Firestore／Storage Rulesを実装。ローカル自動確認済み。本番Storageへの反映とユーザー動作確認は未実施。
 
 ## 完了記録と確認事実
 - 正式管理シートでIEP-P1-001〜011、013の完了記録を確認（2026-09-08）。
@@ -24,7 +24,7 @@ Phase 2 — IEP-P2-006 品目別購入候補一覧・比較画面（完了）。
 - 楽天/Amazonの認証準備はP2-013/014で段階案内。手入力は取得待ちにしない。
 
 ## 次の作業
-1. IEP-P2-007（購入先採用・数量分割管理）へ進む。
+1. IEP-P2-010（Rules / Index統合確認）へ進む。
 
 ## 運用
 1機能ごとに実装・自動確認・ユーザー動作確認を行い、OK後に次へ進む。
@@ -48,10 +48,17 @@ firestore.rulesをieppurchaseへデプロイ済み。Firestore Emulator Rulesテ
 - Functions / Firestore Rulesの本番デプロイは未実施。公開済みFunctionsは0件を確認。
 - 本件は実装完了・本番デプロイおよびFirebase連携のユーザー確認待ちとしてクローズする。
 - 再開条件: Blaze切替後、FunctionsとRulesをデプロイし、10へ6+4成功、6+5拒否、採用解除を実機確認する。
-## IEP-P2-008 の実装（2026-09-09・ユーザー確認待ち）
+## IEP-P2-008 の実装（2026-09-09・完了／本番デプロイ保留）
 - 採用時点の候補スナップショット（候補ID、仕入先、数量、単価、送料、総額、観測日時）を `sourcingDecisions` に固定保存。
 - 採用・解除を同一Firestoreトランザクション内で `auditLogs` へ記録。変更前後、操作者、日時、RFQ・採用IDを保持する。
 - `auditLogs` はログインユーザーが参照可能で、クライアントからの作成・更新・削除を拒否するRulesを追加。
 - RFQ品目の採用パネルに、採用・解除の日時、操作者、理由を含む変更履歴を表示。
-- `auditLogs(rfqId, createdAt desc)` Indexを追加。本番反映はP2-007と同様、Blaze切替後のFunctions/Rules/Indexデプロイが必要。
+- `auditLogs(rfqId, createdAt desc)` Indexを追加。管理シートを完了・Codex確認OK・ユーザー確認OKへ更新済み。本番反映はP2-007と同様、Blaze切替後のFunctions/Rules/Indexデプロイが必要。
 - 自動確認: Functions build、typecheck、lint、sourcingComparison test、production build 成功。Rules EmulatorはJava未設定のため未実施。
+## IEP-P2-009 の実装（2026-09-09・ユーザー確認待ち／本番反映保留）
+- 仕入先見積の編集画面からPDF・画像・Excel（.xls/.xlsx、10MB以下）をアップロード・参照可能にした。
+- `documents` にfileName、storagePath、mimeType、fileSize、documentType、entityType、entityId、rfqId、uploadedBy、createdAtを不変メタデータとして保存。
+- 見積への紐付けはrevisionとrevisions履歴を同一トランザクションで更新し、紐付け失敗時は再試行可能。メタデータ書込みは一時失敗時に同一IDで再試行する。
+- Firestore RulesでRFQ・見積・Storageパス・MIME・容量・操作者の整合性を検証。Storage Rulesで未認証、存在しないRFQ、形式外、空、10MB超、上書き、削除を拒否する。
+- 自動確認: typecheck、lint、build、単体テスト82件、Firestore Rulesテスト113件、Storage Rulesテスト2件成功。
+- 本番Storageバケット／Rulesのデプロイは条件未確認のため未実施。

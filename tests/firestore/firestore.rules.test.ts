@@ -122,7 +122,7 @@ describe('company access boundary', () => {
   })
   it('rejects unknown paths, nested paths and future features even for admin', async () => {
     const db = dbFor('admin')
-    for (const path of ['settings/system', 'auditLogs/log', 'salesQuotes/quote', 'customers/existing/private/data']) {
+    for (const path of ['settings/system', 'salesQuotes/quote', 'customers/existing/private/data']) {
       await assertFails(getDoc(doc(db, path)))
       await assertFails(setDoc(doc(db, path), { value: true }))
     }

@@ -18,7 +18,7 @@ service firebase.storage {
     // reference this path from Firestore instead of storing file bytes there.
     match /rfqs/{rfqId}/{fileName} {
       allow read: if isSignedIn();
-      allow create: if isSignedIn() && isAllowedAttachment();
+      allow create: if isSignedIn() && resource == null && firestore.exists(/databases/(default)/documents/rfqs/$(rfqId)) && isAllowedAttachment();
       allow update, delete: if false;
     }
 

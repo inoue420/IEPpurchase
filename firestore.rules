@@ -188,7 +188,7 @@ service cloud.firestore {
     match /supplierQuotes/{quoteId} {
       function validSupplierQuote(d) {
         return d.keys().hasAll(['rfqId', 'supplierId', 'supplierName', 'requestId', 'quoteNumber', 'quoteDate', 'validUntil', 'documentId', 'subtotal', 'tax', 'total', 'status', 'note', 'revision', 'archivedAt', 'archivedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
-          && d.keys().hasOnly(['rfqId', 'supplierId', 'supplierName', 'requestId', 'quoteNumber', 'quoteDate', 'validUntil', 'documentId', 'subtotal', 'tax', 'total', 'status', 'note', 'revision', 'archivedAt', 'archivedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+          && d.keys().hasOnly(['rfqId', 'supplierId', 'supplierName', 'requestId', 'quoteNumber', 'quoteDate', 'validUntil', 'documentId', 'subtotal', 'tax', 'total', 'status', 'note', 'revision', 'archivedAt', 'archivedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'itemCount', 'shippingTotal', 'lastItemId'])
           && d.rfqId is string && d.rfqId.size() > 0 && exists(/databases/$(database)/documents/rfqs/$(d.rfqId))
           && d.supplierId is string && d.supplierId.size() > 0 && exists(/databases/$(database)/documents/suppliers/$(d.supplierId))
           && d.supplierName is string && d.supplierName.size() > 0 && d.supplierName.size() <= 200
@@ -200,16 +200,143 @@ service cloud.firestore {
           && d.status in ['draft', 'valid', 'withdrawn'] && d.note is string && d.note.size() <= 5000 && d.revision is int && d.revision > 0 && d.archivedAt == null && d.archivedBy == null
           && d.createdAt is timestamp && d.createdBy is string && d.updatedAt == request.time && d.updatedBy == request.auth.uid;
       }
+
+      function headerHistory(d) {
+        let h = getAfter(/databases/$(database)/documents/supplierQuotes/$(quoteId)/revisions/$(string(d.revision))).data;
+        return h.snapshot == d && h.previousSnapshot == resource.data
+          && h.createdAt == request.time && h.createdBy == request.auth.uid;
+      }
+      function totalsDelta(d, headerBefore) {
+        let path = /databases/$(database)/documents/supplierQuotes/$(quoteId)/items/$(d.lastItemId);
+        let next = getAfter(path).data;
+        let previous = exists(path) ? get(path).data : {'subtotal': 0, 'tax': 0, 'total': 0, 'shippingTotal': 0};
+        let managed = headerBefore.get('itemCount', 0) > 0;
+        return next.updatedAt == request.time && next.updatedBy == request.auth.uid
+          && (!exists(path) || next.revision == get(path).data.revision + 1)
+          && d.itemCount == headerBefore.get('itemCount', 0) + (exists(path) ? 0 : 1)
+          && d.subtotal == (managed ? headerBefore.subtotal : 0) - previous.subtotal + next.subtotal
+          && d.tax == (managed ? headerBefore.tax : 0) - previous.tax + next.tax
+          && d.total == (managed ? headerBefore.total : 0) - previous.total + next.total
+          && d.shippingTotal == headerBefore.get('shippingTotal', 0) - previous.shippingTotal + next.shippingTotal;
+      }
+      function managedUpdate(d) {
+        let changed = d.diff(resource.data).affectedKeys();
+        return d.itemCount is int && d.itemCount > 0
+          && d.shippingTotal is int && d.shippingTotal >= 0 && d.shippingTotal <= d.total
+          && d.lastItemId is string && d.lastItemId.size() > 0 && d.lastItemId.size() <= 128
+          && d.supplierId == resource.data.supplierId && d.requestId == resource.data.requestId
+          && ((!changed.hasAny(['subtotal', 'tax', 'total', 'shippingTotal', 'itemCount', 'lastItemId'])
+                && resource.data.get('itemCount', 0) > 0)
+            || (changed.hasOnly(['subtotal', 'tax', 'total', 'shippingTotal', 'itemCount', 'lastItemId', 'revision', 'updatedAt', 'updatedBy'])
+                && resource.data.status != 'withdrawn' && totalsDelta(d, resource.data)));
+      }
       allow get, list: if isSignedIn();
-      allow create: if isSignedIn() && validSupplierQuote(request.resource.data) && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid && request.resource.data.revision == 1;
-      allow update: if isSignedIn() && validSupplierQuote(request.resource.data) && request.resource.data.rfqId == resource.data.rfqId && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.revision == resource.data.revision + 1;
+      allow create: if isSignedIn() && validSupplierQuote(request.resource.data)
+        && !request.resource.data.keys().hasAny(['itemCount', 'shippingTotal', 'lastItemId'])
+        && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid && request.resource.data.revision == 1;
+      allow update: if isSignedIn() && validSupplierQuote(request.resource.data)
+        && request.resource.data.rfqId == resource.data.rfqId
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.revision == resource.data.revision + 1
+        && headerHistory(request.resource.data)
+        && ((request.resource.data.keys().hasAll(['itemCount', 'shippingTotal', 'lastItemId']) && managedUpdate(request.resource.data))
+          || (!resource.data.keys().hasAny(['itemCount', 'shippingTotal', 'lastItemId'])
+            && !request.resource.data.keys().hasAny(['itemCount', 'shippingTotal', 'lastItemId'])));
       allow delete: if false;
       match /revisions/{revisionId} {
         allow get, list: if isSignedIn();
-        allow create: if isSignedIn() && revisionId.matches('[0-9]+') && request.resource.data.keys().hasOnly(['revision', 'snapshot', 'createdAt', 'createdBy']) && request.resource.data.revision is int && request.resource.data.revision > 0 && request.resource.data.snapshot is map && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid;
+        allow create: if isSignedIn()
+          && revisionId == string(request.resource.data.revision)
+          && getAfter(/databases/$(database)/documents/supplierQuotes/$(quoteId)).data.revision == request.resource.data.revision
+          && getAfter(/databases/$(database)/documents/supplierQuotes/$(quoteId)).data.updatedAt == request.time
+          && request.resource.data.keys().hasOnly(['revision', 'snapshot', 'previousSnapshot', 'createdAt', 'createdBy'])
+          && request.resource.data.snapshot is map && request.resource.data.createdAt == request.time
+          && request.resource.data.createdBy == request.auth.uid
+          && (request.resource.data.revision == 1
+            || (request.resource.data.snapshot == getAfter(/databases/$(database)/documents/supplierQuotes/$(quoteId)).data
+              && request.resource.data.previousSnapshot == get(/databases/$(database)/documents/supplierQuotes/$(quoteId)).data));
         allow update, delete: if false;
       }
-    }    match /rfqCounters/{year} {
+      match /items/{itemId} {
+        // Integer remainder is removed before division, avoiding floating-point rounding near a yen boundary.
+        function floorDivide(n, divisor) { return int((n - n % divisor) / divisor); }
+        function tax(amount, category, rate) {
+          return category == 'exempt' ? 0 : floorDivide(amount * rate, category == 'inclusive' ? 10000 + rate : 10000);
+        }
+        function validTax(category, rate) {
+          return category in ['exclusive', 'inclusive', 'exempt'] && rate is int
+            && rate >= 0 && rate <= 10000 && (category != 'exempt' || rate == 0);
+        }
+        function amounts(d) {
+          let goods = floorDivide(d.quantityMillis * d.unitPrice, 1000);
+          let goodsTax = tax(goods, d.taxCategory, d.taxRateBps);
+          let shippingTax = tax(d.shippingFee, d.shippingTaxCategory, d.shippingTaxRateBps);
+          let base = goods - (d.taxCategory == 'inclusive' ? goodsTax : 0)
+            + d.shippingFee - (d.shippingTaxCategory == 'inclusive' ? shippingTax : 0);
+          return d.subtotal == base && d.tax == goodsTax + shippingTax && d.total == base + d.tax
+            && d.shippingTotal == d.shippingFee + (d.shippingTaxCategory == 'exclusive' ? shippingTax : 0);
+        }
+        function references(d, header) {
+          let item = get(/databases/$(database)/documents/rfqs/$(d.rfqId)/items/$(d.rfqItemId)).data;
+          return d.rfqId == header.rfqId && item.archivedAt == null && item.status != 'cancelled'
+            && d.productId == (item.productId == '' ? null : item.productId)
+            && (header.requestId == null
+              || (get(/databases/$(database)/documents/supplierQuoteRequests/$(header.requestId)).data.rfqItemIds.hasAny([d.rfqItemId])
+                && get(/databases/$(database)/documents/supplierQuoteRequests/$(header.requestId)).data.status != 'cancelled'));
+        }
+        function validLine(d) {
+          return d.keys().hasAll(['rfqId', 'rfqItemId', 'productId', 'partNumber', 'itemName', 'unit', 'quantity', 'quantityMillis', 'unitPrice', 'shippingFee', 'taxCategory', 'taxRateBps', 'shippingTaxCategory', 'shippingTaxRateBps', 'subtotal', 'tax', 'total', 'shippingTotal', 'deliveryDate', 'note', 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && d.keys().hasOnly(['rfqId', 'rfqItemId', 'productId', 'partNumber', 'itemName', 'unit', 'quantity', 'quantityMillis', 'unitPrice', 'shippingFee', 'taxCategory', 'taxRateBps', 'shippingTaxCategory', 'shippingTaxRateBps', 'subtotal', 'tax', 'total', 'shippingTotal', 'deliveryDate', 'note', 'revision', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+            && d.rfqItemId is string && d.rfqItemId.size() > 0 && d.rfqItemId.size() <= 128
+            && (d.productId == null || (d.productId is string && d.productId.size() <= 128))
+            && d.partNumber is string && d.partNumber.size() <= 200
+            && d.itemName is string && d.itemName.size() > 0 && d.itemName.size() <= 500
+            && d.unit is string && d.unit.size() > 0 && d.unit.size() <= 50
+            && d.quantityMillis is int && d.quantityMillis > 0 && d.quantityMillis <= 1000000000
+            && d.quantity is number && d.quantity == d.quantityMillis / 1000.0
+            && d.unitPrice is int && d.unitPrice >= 0 && d.unitPrice <= 1000000000
+            && d.shippingFee is int && d.shippingFee >= 0 && d.shippingFee <= 1000000000000
+            && validTax(d.taxCategory, d.taxRateBps) && validTax(d.shippingTaxCategory, d.shippingTaxRateBps)
+            && d.subtotal is int && d.tax is int && d.total is int && d.shippingTotal is int
+            && d.total >= 0 && d.total <= 1000000000000 && amounts(d)
+            && (d.deliveryDate == null || d.deliveryDate is timestamp)
+            && d.note is string && d.note.size() <= 5000
+            && d.revision is int && d.revision > 0 && d.createdAt is timestamp && d.createdBy is string
+            && d.updatedAt == request.time && d.updatedBy == request.auth.uid;
+        }
+        function coupled(d) {
+          let parent = /databases/$(database)/documents/supplierQuotes/$(quoteId);
+          let before = get(parent).data;
+          let after = getAfter(parent).data;
+          return after.revision == before.revision + 1 && after.updatedAt == request.time
+            && after.updatedBy == request.auth.uid && after.lastItemId == itemId
+            && before.archivedAt == null && before.status != 'withdrawn'
+            && references(d, after) && totalsDelta(after, before)
+            && getAfter(/databases/$(database)/documents/supplierQuotes/$(quoteId)/items/$(itemId)/revisions/$(string(d.revision))).data.snapshot == d;
+        }
+        allow get, list: if isSignedIn();
+        allow create: if isSignedIn() && validLine(request.resource.data)
+          && request.resource.data.revision == 1 && request.resource.data.createdAt == request.time
+          && request.resource.data.createdBy == request.auth.uid && coupled(request.resource.data);
+        allow update: if isSignedIn() && validLine(request.resource.data)
+          && request.resource.data.rfqId == resource.data.rfqId && request.resource.data.rfqItemId == resource.data.rfqItemId
+          && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.revision == resource.data.revision + 1 && coupled(request.resource.data);
+        allow delete: if false;
+        match /revisions/{revisionId} {
+          allow get, list: if isSignedIn();
+          allow create: if isSignedIn()
+            && request.resource.data.keys().hasOnly(['snapshot', 'createdAt', 'createdBy'])
+            && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid
+            && request.resource.data.snapshot == getAfter(/databases/$(database)/documents/supplierQuotes/$(quoteId)/items/$(itemId)).data
+            && revisionId == string(request.resource.data.snapshot.revision)
+            && request.resource.data.snapshot.updatedAt == request.time;
+          allow update, delete: if false;
+        }
+      }
+    }
+    match /rfqCounters/{year} {
       function validCounter() {
         let d = request.resource.data;
         return year.matches('[0-9]{4}')

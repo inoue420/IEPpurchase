@@ -185,7 +185,31 @@ service cloud.firestore {
         && request.resource.data.createdBy == resource.data.createdBy;
       allow delete: if false;
     }
-    match /rfqCounters/{year} {
+    match /supplierQuotes/{quoteId} {
+      function validSupplierQuote(d) {
+        return d.keys().hasAll(['rfqId', 'supplierId', 'supplierName', 'requestId', 'quoteNumber', 'quoteDate', 'validUntil', 'documentId', 'subtotal', 'tax', 'total', 'status', 'note', 'revision', 'archivedAt', 'archivedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+          && d.keys().hasOnly(['rfqId', 'supplierId', 'supplierName', 'requestId', 'quoteNumber', 'quoteDate', 'validUntil', 'documentId', 'subtotal', 'tax', 'total', 'status', 'note', 'revision', 'archivedAt', 'archivedBy', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+          && d.rfqId is string && d.rfqId.size() > 0 && exists(/databases/$(database)/documents/rfqs/$(d.rfqId))
+          && d.supplierId is string && d.supplierId.size() > 0 && exists(/databases/$(database)/documents/suppliers/$(d.supplierId))
+          && d.supplierName is string && d.supplierName.size() > 0 && d.supplierName.size() <= 200
+          && (d.requestId == null || (d.requestId is string && exists(/databases/$(database)/documents/supplierQuoteRequests/$(d.requestId)) && get(/databases/$(database)/documents/supplierQuoteRequests/$(d.requestId)).data.rfqId == d.rfqId && get(/databases/$(database)/documents/supplierQuoteRequests/$(d.requestId)).data.supplierId == d.supplierId))
+          && d.quoteNumber is string && d.quoteNumber.size() > 0 && d.quoteNumber.size() <= 200
+          && (d.quoteDate == null || d.quoteDate is timestamp) && (d.validUntil == null || d.validUntil is timestamp) && (d.quoteDate == null || d.validUntil == null || d.validUntil >= d.quoteDate)
+          && (d.documentId == null || (d.documentId is string && d.documentId.size() <= 128))
+          && d.subtotal is int && d.tax is int && d.total is int && d.subtotal >= 0 && d.tax >= 0 && d.total == d.subtotal + d.tax && d.total <= 1000000000000
+          && d.status in ['draft', 'valid', 'withdrawn'] && d.note is string && d.note.size() <= 5000 && d.revision is int && d.revision > 0 && d.archivedAt == null && d.archivedBy == null
+          && d.createdAt is timestamp && d.createdBy is string && d.updatedAt == request.time && d.updatedBy == request.auth.uid;
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && validSupplierQuote(request.resource.data) && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid && request.resource.data.revision == 1;
+      allow update: if isSignedIn() && validSupplierQuote(request.resource.data) && request.resource.data.rfqId == resource.data.rfqId && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy && request.resource.data.revision == resource.data.revision + 1;
+      allow delete: if false;
+      match /revisions/{revisionId} {
+        allow get, list: if isSignedIn();
+        allow create: if isSignedIn() && revisionId.matches('[0-9]+') && request.resource.data.keys().hasOnly(['revision', 'snapshot', 'createdAt', 'createdBy']) && request.resource.data.revision is int && request.resource.data.revision > 0 && request.resource.data.snapshot is map && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid;
+        allow update, delete: if false;
+      }
+    }    match /rfqCounters/{year} {
       function validCounter() {
         let d = request.resource.data;
         return year.matches('[0-9]{4}')

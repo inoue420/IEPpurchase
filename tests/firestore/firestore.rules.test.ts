@@ -314,3 +314,38 @@ describe('supplier request access without a users profile', () => {
     await assertFails(getDoc(doc(env.unauthenticatedContext().firestore(), 'supplierQuoteRequests/shared')))
   })
 })
+
+describe('marketplace offer snapshots', () => {
+  const offer = (changes: DocumentData = {}) => ({
+    rfqId: 'existing', rfqItemId: 'existing', productId: null,
+    source: 'amazon', externalItemId: 'ASIN-1', sellerName: '販売者',
+    itemName: '商品', partNumber: 'A-1', quantity: 2, quantityMillis: 2000,
+    unit: '個', unitPrice: 1100, shippingFee: 550,
+    taxCategory: 'inclusive', taxRateBps: 1000,
+    shippingTaxCategory: 'inclusive', shippingTaxRateBps: 1000,
+    subtotal: 2500, tax: 250, total: 2750, shippingTotal: 550, totalPrice: 2750,
+    stockStatus: '在庫あり', estimatedDeliveryDate: null,
+    itemUrl: 'https://example.test/item', retrievedAt: past, note: '',
+    createdAt: serverTimestamp(), createdBy: 'member', ...changes,
+  })
+  it('adds separate snapshots and preserves old prices', async () => {
+    const db = dbFor('member')
+    await assertSucceeds(setDoc(doc(db, 'marketplaceOffers/first'), offer()))
+    await assertSucceeds(setDoc(doc(db, 'marketplaceOffers/second'), offer({ unitPrice: 1200, subtotal: 2682, tax: 268, total: 2950, totalPrice: 2950 })))
+    expect((await getDocs(collection(db, 'marketplaceOffers'))).size).toBe(2)
+    await assertFails(updateDoc(doc(db, 'marketplaceOffers/first'), { unitPrice: 1200 }))
+    await assertFails(deleteDoc(doc(db, 'marketplaceOffers/first')))
+  })
+  it('distinguishes unknown shipping from free shipping', async () => {
+    const db = dbFor('member')
+    await assertSucceeds(setDoc(doc(db, 'marketplaceOffers/unknown-shipping'), offer({ shippingFee: null, subtotal: null, tax: null, total: null, shippingTotal: null, totalPrice: null })))
+    await assertSucceeds(setDoc(doc(db, 'marketplaceOffers/free-shipping'), offer({ shippingFee: 0, subtotal: 2000, tax: 200, total: 2200, shippingTotal: 0, totalPrice: 2200 })))
+  })
+  it('rejects invalid references, totals, authors and anonymous writes', async () => {
+    const db = dbFor('member')
+    await assertFails(setDoc(doc(db, 'marketplaceOffers/missing-item'), offer({ rfqItemId: 'missing' })))
+    await assertFails(setDoc(doc(db, 'marketplaceOffers/bad-total'), offer({ totalPrice: 9999 })))
+    await assertFails(setDoc(doc(db, 'marketplaceOffers/bad-author'), offer({ createdBy: 'admin' })))
+    await assertFails(setDoc(doc(env.unauthenticatedContext().firestore(), 'marketplaceOffers/anon'), offer()))
+  })
+})

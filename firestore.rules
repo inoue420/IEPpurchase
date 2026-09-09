@@ -336,6 +336,61 @@ service cloud.firestore {
         }
       }
     }
+    match /marketplaceOffers/{offerId} {
+      function floorDivide(n, divisor) { return int((n - n % divisor) / divisor); }
+      function validTax(category, rate) {
+        return category in ['exclusive', 'inclusive', 'exempt'] && rate is int
+          && rate >= 0 && rate <= 10000 && (category != 'exempt' || rate == 0);
+      }
+      function tax(amount, category, rate) {
+        return category == 'exempt' ? 0 : floorDivide(amount * rate, category == 'inclusive' ? 10000 + rate : 10000);
+      }
+      function validOfferAmounts(d) {
+        let goods = floorDivide(d.quantityMillis * d.unitPrice, 1000);
+        let goodsTax = tax(goods, d.taxCategory, d.taxRateBps);
+        let goodsBase = goods - (d.taxCategory == 'inclusive' ? goodsTax : 0);
+        return (d.shippingFee == null
+            && d.subtotal == null && d.tax == null && d.total == null
+            && d.shippingTotal == null && d.totalPrice == null)
+          || (d.shippingFee is int && d.shippingFee >= 0 && d.shippingFee <= 1000000000000
+            && d.subtotal == goodsBase + d.shippingFee - (d.shippingTaxCategory == 'inclusive' ? tax(d.shippingFee, d.shippingTaxCategory, d.shippingTaxRateBps) : 0)
+            && d.tax == goodsTax + tax(d.shippingFee, d.shippingTaxCategory, d.shippingTaxRateBps)
+            && d.total == d.subtotal + d.tax && d.totalPrice == d.total
+            && d.shippingTotal == d.shippingFee + (d.shippingTaxCategory == 'exclusive' ? tax(d.shippingFee, d.shippingTaxCategory, d.shippingTaxRateBps) : 0)
+            && d.total <= 1000000000000);
+      }
+      function validMarketplaceOffer(d) {
+        let itemPath = /databases/$(database)/documents/rfqs/$(d.rfqId)/items/$(d.rfqItemId);
+        let item = get(itemPath).data;
+        return d.keys().hasAll(['rfqId', 'rfqItemId', 'source', 'externalItemId', 'sellerName', 'itemName', 'partNumber', 'quantity', 'quantityMillis', 'unit', 'unitPrice', 'shippingFee', 'taxCategory', 'taxRateBps', 'shippingTaxCategory', 'shippingTaxRateBps', 'subtotal', 'tax', 'total', 'shippingTotal', 'totalPrice', 'stockStatus', 'estimatedDeliveryDate', 'itemUrl', 'retrievedAt', 'note', 'productId', 'createdAt', 'createdBy'])
+          && d.keys().hasOnly(['rfqId', 'rfqItemId', 'source', 'externalItemId', 'sellerName', 'itemName', 'partNumber', 'quantity', 'quantityMillis', 'unit', 'unitPrice', 'shippingFee', 'taxCategory', 'taxRateBps', 'shippingTaxCategory', 'shippingTaxRateBps', 'subtotal', 'tax', 'total', 'shippingTotal', 'totalPrice', 'stockStatus', 'estimatedDeliveryDate', 'itemUrl', 'retrievedAt', 'note', 'productId', 'createdAt', 'createdBy'])
+          && d.rfqId is string && d.rfqId.size() > 0 && d.rfqId.size() <= 128
+          && d.rfqItemId is string && d.rfqItemId.size() > 0 && d.rfqItemId.size() <= 128
+          && exists(/databases/$(database)/documents/rfqs/$(d.rfqId)) && exists(itemPath)
+          && item.archivedAt == null && item.status != 'cancelled'
+          && d.productId == (item.productId == '' ? null : item.productId) && d.unit == item.unit
+          && d.source in ['amazon', 'rakuten', 'other']
+          && d.externalItemId is string && d.externalItemId.size() <= 200
+          && d.sellerName is string && d.sellerName.size() <= 200
+          && d.itemName is string && d.itemName.size() > 0 && d.itemName.size() <= 500
+          && d.partNumber is string && d.partNumber.size() <= 200
+          && d.quantityMillis is int && d.quantityMillis > 0 && d.quantityMillis <= 1000000000
+          && d.quantity is number && d.quantity == d.quantityMillis / 1000.0
+          && d.unit is string && d.unit.size() > 0 && d.unit.size() <= 50
+          && d.unitPrice is int && d.unitPrice >= 0 && d.unitPrice <= 1000000000
+          && validTax(d.taxCategory, d.taxRateBps) && validTax(d.shippingTaxCategory, d.shippingTaxRateBps)
+          && validOfferAmounts(d)
+          && d.stockStatus is string && d.stockStatus.size() <= 100
+          && (d.estimatedDeliveryDate == null || d.estimatedDeliveryDate is timestamp)
+          && (d.itemUrl == null || (d.itemUrl is string && d.itemUrl.size() <= 2000 && d.itemUrl.matches('https?://.+')))
+          && d.retrievedAt is timestamp && d.retrievedAt <= request.time
+          && d.note is string && d.note.size() <= 5000
+          && d.createdAt == request.time && d.createdBy == request.auth.uid;
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && validMarketplaceOffer(request.resource.data);
+      allow update, delete: if false;
+    }
     match /rfqCounters/{year} {
       function validCounter() {
         let d = request.resource.data;

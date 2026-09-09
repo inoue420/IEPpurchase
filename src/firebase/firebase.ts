@@ -2,6 +2,7 @@ import { type FirebaseApp, getApp, getApps, initializeApp } from 'firebase/app'
 import { connectAuthEmulator, getAuth, type Auth } from 'firebase/auth'
 import { connectFirestoreEmulator, getFirestore, type Firestore } from 'firebase/firestore'
 import { connectStorageEmulator, getStorage, type FirebaseStorage } from 'firebase/storage'
+import { connectFunctionsEmulator, getFunctions, type Functions } from 'firebase/functions'
 
 interface FirebaseClientConfig {
   apiKey: string
@@ -32,8 +33,11 @@ export const firebaseAuth: Auth = getAuth(firebaseApp)
 export const firestore: Firestore = getFirestore(firebaseApp)
 export const firebaseStorage: FirebaseStorage = getStorage(firebaseApp)
 
+export const firebaseFunctions: Functions = getFunctions(firebaseApp, 'asia-northeast1')
+
 if (import.meta.env.VITE_USE_FIREBASE_EMULATORS === 'true') {
   connectAuthEmulator(firebaseAuth, 'http://127.0.0.1:9099', { disableWarnings: true })
   connectFirestoreEmulator(firestore, '127.0.0.1', 8080)
   connectStorageEmulator(firebaseStorage, '127.0.0.1', 9199)
+  connectFunctionsEmulator(firebaseFunctions, '127.0.0.1', 5001)
 }

@@ -408,6 +408,15 @@ service cloud.firestore {
       allow delete, list: if false;
     }
     match /{document=**} {
+    // P2-007: only the Admin SDK in callable Functions mutates decisions and their aggregate state.
+    match /rfqs/{rfqId}/sourcingStates/{itemId} {
+      allow get: if isSignedIn();
+      allow list, create, update, delete: if false;
+    }
+    match /rfqs/{rfqId}/items/{itemId}/sourcingDecisions/{decisionId} {
+      allow get, list: if isSignedIn();
+      allow create, update, delete: if false;
+    }
       allow read, write: if false;
     }
   }

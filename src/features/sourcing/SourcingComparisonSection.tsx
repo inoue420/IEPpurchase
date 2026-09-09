@@ -6,6 +6,7 @@ import { subscribeSupplierQuoteItems, type SupplierQuoteItem } from '../supplier
 import { subscribeSupplierQuotes, type SupplierQuote } from '../supplierQuotes/supplierQuoteRepository'
 import { buildSourcingCandidates, sortSourcingCandidates, type SourcingSortKey } from './sourcingComparison'
 
+import { SourcingDecisionPanel } from './SourcingDecisionPanel'
 const yen = (value: number | null) => value === null ? '未確認' : `${value.toLocaleString('ja-JP')}円`
 const dateText = (value: Date | null) => value ? value.toLocaleDateString('ja-JP', { timeZone: 'Asia/Tokyo' }) : '未確認'
 const itemTitle = (item: RfqItem) => item.productName || item.translatedDescription || item.originalDescription
@@ -57,6 +58,7 @@ export function SourcingComparisonSection({ rfqId }: { rfqId: string }) {
         {candidates.length === 0 ? <TableRow><TableCell colSpan={9} align="center">この品目の比較候補はありません。仕入先見積明細またはEC購入候補を登録してください。</TableCell></TableRow> : candidates.map((candidate) => <TableRow key={`${candidate.kind}-${candidate.id}`}><TableCell>{candidate.source}<br />{candidate.seller || '—'}{candidate.expired && <><br /><Chip size="small" color="warning" label="見積期限切れ" /></>}</TableCell><TableCell>{candidate.itemName}<br />{candidate.partNumber || '—'}</TableCell><TableCell>{candidate.quantity} {candidate.unit}{selected && (candidate.quantity !== selected.quantity || candidate.unit !== selected.unit) && <><br /><Chip size="small" color="info" label="数量・単位条件が異なります" /></>}</TableCell><TableCell>{yen(candidate.unitPrice)}</TableCell><TableCell>{yen(candidate.shippingFee)}</TableCell><TableCell>{yen(candidate.total)}</TableCell><TableCell>{dateText(candidate.delivery)}<br />{candidate.stock || '在庫未確認'}</TableCell><TableCell>{dateText(candidate.observedAt)}</TableCell><TableCell>{candidate.url ? <Link href={candidate.url} target="_blank" rel="noopener noreferrer">商品</Link> : '—'}{candidate.note && <><br />{candidate.note}</>}</TableCell></TableRow>)}
       </TableBody></Table></TableContainer>
     </Stack>}
+      {selected && <SourcingDecisionPanel rfqId={rfqId} item={selected} candidates={candidates} />}
   </Box>
 }
 

@@ -12,6 +12,9 @@ export interface SourcingCandidate {
   seller: string
   itemName: string
   partNumber: string
+  sourceType: 'supplier_quote' | 'amazon' | 'rakuten' | 'manual'
+  sourceQuoteId: string | null
+  supplierId: string | null
   quantity: number
   unit: string
   unitPrice: number
@@ -23,6 +26,10 @@ export interface SourcingCandidate {
   observedAt: Date | null
   note: string
   expired: boolean
+  taxCategory: 'exclusive' | 'inclusive' | 'exempt'
+  taxRateBps: number
+  shippingTaxCategory: 'exclusive' | 'inclusive' | 'exempt'
+  shippingTaxRateBps: number
 }
 
 const sourceLabels = { amazon: 'Amazon', rakuten: '楽天', other: 'その他' } as const
@@ -43,6 +50,9 @@ export function buildSourcingCandidates(
       seller: offer.sellerName,
       itemName: offer.itemName,
       partNumber: offer.partNumber,
+      sourceType: (offer.source === 'other' ? 'manual' : offer.source) as 'amazon' | 'rakuten' | 'manual',
+      sourceQuoteId: null,
+      supplierId: null,
       quantity: offer.quantity,
       unit: offer.unit,
       unitPrice: offer.unitPrice,
@@ -52,6 +62,10 @@ export function buildSourcingCandidates(
       stock: offer.stockStatus,
       url: offer.itemUrl,
       observedAt: offer.retrievedAt.toDate(),
+      taxCategory: offer.taxCategory,
+      taxRateBps: offer.taxRateBps,
+      shippingTaxCategory: offer.shippingTaxCategory,
+      shippingTaxRateBps: offer.shippingTaxRateBps,
       note: offer.note,
       expired: false,
     }))
@@ -67,11 +81,18 @@ export function buildSourcingCandidates(
         seller: quote.supplierName,
         itemName: item.itemName,
         partNumber: item.partNumber,
+        sourceType: 'supplier_quote' as const,
+        sourceQuoteId: quote.id,
+        supplierId: quote.supplierId,
         quantity: item.quantity,
         unit: item.unit,
         unitPrice: item.unitPrice,
         shippingFee: item.shippingFee,
         total: item.total,
+        taxCategory: item.taxCategory,
+        taxRateBps: item.taxRateBps,
+        shippingTaxCategory: item.shippingTaxCategory,
+        shippingTaxRateBps: item.shippingTaxRateBps,
         delivery: item.deliveryDate?.toDate() ?? null,
         stock: '',
         url: null,

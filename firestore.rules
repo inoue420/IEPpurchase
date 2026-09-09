@@ -6,6 +6,11 @@ service cloud.firestore {
       // Application access requires Firebase Authentication, not a users profile.
       return request.auth != null;
     }
+    match /auditLogs/{logId} {
+      allow get, list: if isSignedIn();
+      allow create, update, delete: if false;
+    }
+
     match /users/{userId} {
       function validUser(d) {
         return d.keys().hasAll(['email', 'displayName', 'role', 'active', 'createdAt', 'updatedAt'])

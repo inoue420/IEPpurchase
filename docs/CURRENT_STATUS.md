@@ -48,4 +48,10 @@ firestore.rulesをieppurchaseへデプロイ済み。Firestore Emulator Rulesテ
 - Functions / Firestore Rulesの本番デプロイは未実施。公開済みFunctionsは0件を確認。
 - 本件は実装完了・本番デプロイおよびFirebase連携のユーザー確認待ちとしてクローズする。
 - 再開条件: Blaze切替後、FunctionsとRulesをデプロイし、10へ6+4成功、6+5拒否、採用解除を実機確認する。
-
+## IEP-P2-008 の実装（2026-09-09・ユーザー確認待ち）
+- 採用時点の候補スナップショット（候補ID、仕入先、数量、単価、送料、総額、観測日時）を `sourcingDecisions` に固定保存。
+- 採用・解除を同一Firestoreトランザクション内で `auditLogs` へ記録。変更前後、操作者、日時、RFQ・採用IDを保持する。
+- `auditLogs` はログインユーザーが参照可能で、クライアントからの作成・更新・削除を拒否するRulesを追加。
+- RFQ品目の採用パネルに、採用・解除の日時、操作者、理由を含む変更履歴を表示。
+- `auditLogs(rfqId, createdAt desc)` Indexを追加。本番反映はP2-007と同様、Blaze切替後のFunctions/Rules/Indexデプロイが必要。
+- 自動確認: Functions build、typecheck、lint、sourcingComparison test、production build 成功。Rules EmulatorはJava未設定のため未実施。

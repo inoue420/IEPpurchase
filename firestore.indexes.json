@@ -1,32 +1,28 @@
 {
   "indexes": [
     {
-      "fields": [
-        {
-          "fieldPath": "rfqId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "updatedAt",
-          "order": "DESCENDING"
-        }
-      ],
       "collectionGroup": "supplierQuotes",
-      "queryScope": "COLLECTION"
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "rfqId", "order": "ASCENDING" },
+        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+      ]
     },
     {
-      "fields": [
-        {
-          "fieldPath": "rfqId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
-        }
-      ],
       "collectionGroup": "supplierQuoteRequests",
-      "queryScope": "COLLECTION"
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "rfqId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "auditLogs",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "rfqId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

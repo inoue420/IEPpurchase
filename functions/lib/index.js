@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.cancelSourcingDecision = exports.selectSourcingCandidate = void 0;
+exports.searchRakutenItems = exports.cancelSourcingDecision = exports.selectSourcingCandidate = void 0;
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
 const https_1 = require("firebase-functions/v2/https");
@@ -32,7 +32,7 @@ function candidateReference(value) {
 function expiredAt(value) {
     return typeof value === 'object' && value !== null && 'toMillis' in value
         && typeof value.toMillis === 'function'
-        && value.toMillis() < Date.now();
+        && value.toMillis() + 86_400_000 <= Date.now();
 }
 async function loadCandidateSource(transaction, rfqId, rfqItemId, reference) {
     if (reference.sourceType === 'supplier_quote') {
@@ -109,3 +109,5 @@ exports.cancelSourcingDecision = (0, https_1.onCall)({ region: 'asia-northeast1'
     });
     return { cancelled: true };
 });
+var rakuten_1 = require("./rakuten");
+Object.defineProperty(exports, "searchRakutenItems", { enumerable: true, get: function () { return rakuten_1.searchRakutenItems; } });

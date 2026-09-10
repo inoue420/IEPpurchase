@@ -349,6 +349,14 @@ describe('marketplace offer snapshots', () => {
     await assertFails(updateDoc(doc(db, 'marketplaceOffers/first'), { unitPrice: 1200 }))
     await assertFails(deleteDoc(doc(db, 'marketplaceOffers/first')))
   })
+  it('saves and reloads a Rakuten snapshot with unknown shipping', async () => {
+    const db = dbFor('member')
+    const ref = doc(db, 'marketplaceOffers/rakuten-search')
+    await assertSucceeds(setDoc(ref, offer({ source: 'rakuten', externalItemId: 'shop:123', itemUrl: 'https://item.rakuten.co.jp/shop/123/', shippingFee: null, subtotal: null, tax: null, total: null, shippingTotal: null, totalPrice: null })))
+    const snapshot = await assertSucceeds(getDoc(ref))
+    expect(snapshot.data()).toMatchObject({ source: 'rakuten', externalItemId: 'shop:123', rfqId: 'existing', rfqItemId: 'existing', shippingFee: null, totalPrice: null })
+    await assertFails(updateDoc(ref, { unitPrice: 999 }))
+  })
   it('distinguishes unknown shipping from free shipping', async () => {
     const db = dbFor('member')
     await assertSucceeds(setDoc(doc(db, 'marketplaceOffers/unknown-shipping'), offer({ shippingFee: null, subtotal: null, tax: null, total: null, shippingTotal: null, totalPrice: null })))

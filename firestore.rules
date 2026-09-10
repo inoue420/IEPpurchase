@@ -151,12 +151,21 @@ service cloud.firestore {
           && ((!exists(counterPath) && request.resource.data.lineNo == 1)
             || (exists(counterPath) && request.resource.data.lineNo == get(counterPath).data.lastLineNo + 1));
       }
+      function preservesSourcingLockedFields() {
+        let statePath = /databases/$(database)/documents/rfqs/$(rfqId)/sourcingStates/$(itemId);
+        return !exists(statePath) || get(statePath).data.selectedQuantityMillis == 0
+          || (request.resource.data.quantity == resource.data.quantity
+            && request.resource.data.unit == resource.data.unit
+            && request.resource.data.status == resource.data.status
+            && request.resource.data.archivedAt == resource.data.archivedAt);
+      }
       allow get, list: if isSignedIn();
       allow create: if isSignedIn() && exists(/databases/$(database)/documents/rfqs/$(rfqId))
         && validItem(request.resource.data) && validNewLine()
         && request.resource.data.createdAt == request.time && request.resource.data.archivedAt == null;
       allow update: if isSignedIn() && exists(/databases/$(database)/documents/rfqs/$(rfqId))
         && validItem(request.resource.data)
+        && preservesSourcingLockedFields()
         && request.resource.data.lineNo == resource.data.lineNo
         && request.resource.data.createdAt == resource.data.createdAt
         && ((resource.data.archivedAt == null && request.resource.data.archivedAt == null)

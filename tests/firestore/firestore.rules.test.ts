@@ -261,6 +261,19 @@ describe('RFQ items', () => {
     await assertFails(updateDoc(ref, { quantity: 3, updatedAt: serverTimestamp() }))
     await assertSucceeds(updateDoc(ref, { archivedAt: null, updatedAt: serverTimestamp() }))
   })
+  it('locks quantity, unit, status and archive while a sourcing decision is active', async () => {
+    await env.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'rfqs/existing/sourcingStates/existing'), {
+        rfqItemId: 'existing', selectedQuantityMillis: 1000, updatedAt: past,
+      })
+    })
+    const ref = doc(dbFor('member'), 'rfqs/existing/items/existing')
+    await assertSucceeds(updateDoc(ref, { note: '採用後も編集できる項目', updatedAt: serverTimestamp() }))
+    await assertFails(updateDoc(ref, { quantity: 2, updatedAt: serverTimestamp() }))
+    await assertFails(updateDoc(ref, { unit: '箱', updatedAt: serverTimestamp() }))
+    await assertFails(updateDoc(ref, { status: 'cancelled', updatedAt: serverTimestamp() }))
+    await assertFails(updateDoc(ref, { archivedAt: serverTimestamp(), updatedAt: serverTimestamp() }))
+  })
   it('rejects orphan items, counter jumps and standalone allocations', async () => {
     await assertFails(createItem('missing', 1))
     await assertFails(createItem('existing', 3))

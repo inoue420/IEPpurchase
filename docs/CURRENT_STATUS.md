@@ -1,10 +1,10 @@
 # CURRENT_STATUS.md
 
-## Google英訳の追加（2026-09-11・ユーザー確認待ち）
+## Google英訳の追加（2026-09-11・完了／ユーザー確認OK）
 - ユーザーの明示指示により、AI抽出・OCR・Azure比較を保留し、Google Translationによる日本語から英語への手動翻訳だけを追加。
 - RFQ品目編集で、検出言語・通信込み応答時間の表示、英訳の反映、既存translatedDescriptionへの保存に対応。原文変更後は古い結果を反映できない。
 - translateGoogleText、GOOGLE_TRANSLATE_API_KEYのSecret設定、Firebase Hostingを本番反映済み。公開先: https://ieppurchase.web.app
-- 自動確認: typecheck、lint、production build、フロントエンド82件、Functions 9件成功。実API操作のユーザー確認待ち。
+- 自動確認: typecheck、lint、production build、フロントエンド82件、Functions 9件成功。ユーザー本番確認OK。
 - Azure TranslatorはAzureサブスクリプション未登録のため保留。Azure用の一時Secretは実キー設定時に置き換える。
 - 接続・操作手順: docs/TRANSLATION_COMPARISON.md。
 

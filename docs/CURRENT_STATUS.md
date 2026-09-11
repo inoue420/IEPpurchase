@@ -1,10 +1,18 @@
 # CURRENT_STATUS.md
 
+## Google英訳の追加（2026-09-11・ユーザー確認待ち）
+- ユーザーの明示指示により、AI抽出・OCR・Azure比較を保留し、Google Translationによる日本語から英語への手動翻訳だけを追加。
+- RFQ品目編集で、検出言語・通信込み応答時間の表示、英訳の反映、既存translatedDescriptionへの保存に対応。原文変更後は古い結果を反映できない。
+- translateGoogleText、GOOGLE_TRANSLATE_API_KEYのSecret設定、Firebase Hostingを本番反映済み。公開先: https://ieppurchase.web.app
+- 自動確認: typecheck、lint、production build、フロントエンド82件、Functions 9件成功。実API操作のユーザー確認待ち。
+- Azure TranslatorはAzureサブスクリプション未登録のため保留。Azure用の一時Secretは実キー設定時に置き換える。
+- 接続・操作手順: docs/TRANSLATION_COMPARISON.md。
+
 ## プロジェクト
 IEPpurchase 資材調達管理システム
 
 ## 現在Phase・状態
-Phase 2 — IEP-P2-012 総合確認（完了・ユーザー確認OK）。
+Phase 3 — IEP-P3-002 freee OAuth連携（完了・ユーザー確認OK）。
 
 仕入先見積添付、購入候補比較、数量採用・解除、履歴、Firestore／Storage Rulesを本番反映済み。2026-09-10に採用成功・数量超過拒否・解除を確認し、候補原本のサーバー再検証と採用中品目ロックを追加反映した。
 
@@ -24,7 +32,7 @@ Phase 2 — IEP-P2-012 総合確認（完了・ユーザー確認OK）。
 - 楽天/Amazonの認証準備はP2-013/014で段階案内。手入力は取得待ちにしない。
 
 ## 次の作業
-1. Phase 3の実装計画を別タスクで作成する。
+1. 次のPhase 3機能を正式管理シートに従って選定する。
 
 ## 運用
 1機能ごとに実装・自動確認・ユーザー動作確認を行い、OK後に次へ進む。
@@ -81,11 +89,12 @@ firestore.rulesをieppurchaseへデプロイ済み。Firestore Emulator Rulesテ
 - 認証済み画面での検索→候補保存はユーザー確認待ち（ブラウザ自動操作がsandbox起動エラー）。フロントHostingデプロイは未実施。
 - 管理シートIEP-P2-013をユーザー確認待ちへ更新。詳細・操作手順: docs/IEP-P2-013.md。
 - 次の作業はIEP-P2-013のユーザー確認と完了記録。未依頼のPhase 3実装へ進まない。
-## IEP-P3-002 freee OAuthコールバック・Secret設定（2026-09-11・Secret登録待ち）
+## IEP-P3-002 freee OAuthコールバック・Secret設定（2026-09-11・完了／ユーザー確認OK）
 - 認証済み利用者だけが開始できるfreee OAuth認可導線と、事業所選択付き認可URLを追加。
 - 10分で失効するランダムstateをハッシュ化して照合し、コールバック時に一度だけ消費する。
 - 認可コードをサーバー側でトークンへ交換し、アクセストークンとリフレッシュトークンをGoogle Secret Managerの新しいSecretバージョンとして保存する。ブラウザ、Firestore、ログには保存しない。
-- freee連携画面、Callable Function、HTTPSコールバックを実装済み。見積書作成・送付は実装・実行していない。
+- freee連携画面、Callable Function、HTTPSコールバックを本番デプロイ済み。見積書作成・送付は実装・実行していない。
+- `FREEE_CLIENT_ID`、`FREEE_CLIENT_SECRET`、`FREEE_OAUTH_TOKENS` を設定済み。実行サービスアカウントに対象SecretのAccessorおよびVersion Adderを付与済み。
+- 新しいfreeeプライベートアプリでOAuth連携に成功し、対象事業所の接続情報をSecret Managerへ保存できることをユーザー確認済み。
+- 旧freeeアプリを削除し、旧Secret版を削除済み。現行版は `FREEE_CLIENT_ID@5`、`FREEE_CLIENT_SECRET@4`、`FREEE_OAUTH_TOKENS@2`。
 - 自動確認: typecheck、lint、production build、単体テスト82件、Functions build、Functionsテスト5件成功。
-- `FREEE_CLIENT_ID` / `FREEE_CLIENT_SECRET` / `FREEE_OAUTH_TOKENS` の登録、および `beginFreeeOAuth` と `freeeOAuthCallback` の本番デプロイを完了。Cloud Functions URL形式のコールバックで無効stateをHTTP 400として拒否することを確認。`r`n- 次の作業は、実行サービスアカウント `1021971000186-compute@developer.gserviceaccount.com` に `FREEE_OAUTH_TOKENS` の Secret Manager Secret Version Adder を付与し、freeeアプリへ `https://asia-northeast1-ieppurchase.cloudfunctions.net/freeeOAuthCallback` を登録した後のOAuth実機確認。
-

@@ -3,6 +3,7 @@ import { Alert, Autocomplete, Box, Button, Dialog, DialogActions, DialogContent,
 import { createRfqItem, updateRfqItem, type RfqItem, type RfqItemInput, type RfqItemProduct } from './rfqItemRepository'
 import { RFQ_ITEM_STATUSES, localDateInput, rfqItemSchema, rfqItemStatusLabels } from './rfqItemSchema'
 import { rfqError } from './rfqError'
+import { TranslationComparison } from './TranslationComparison'
 
 const emptyInput: RfqItemInput = { originalDescription: '', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 1, unit: '個', requestedDeliveryDate: '', status: 'pending', note: '' }
 const textFields = [
@@ -46,6 +47,7 @@ export function RfqItemDialog({ rfqId, item, products, onClose, onSaved }: { rfq
         {input.productId && !selectedProduct && <Alert severity="info">紐付け済みの商品を取得できません。保存済みの商品情報を表示しています。</Alert>}
         <Autocomplete disabled={busy} options={products.filter(product => product.active || product.id === input.productId)} value={selectedProduct} isOptionEqualToValue={(a, b) => a.id === b.id} getOptionLabel={product => `${product.manufacturerName} ${product.partNumber} — ${product.name}`} onChange={(_, product) => chooseProduct(product)} renderInput={params => <TextField {...params} label="商品マスター（任意）" />} />
         {textFields.map(({ key, label, max, rows, required }) => <TextField key={key} label={label} required={required} multiline={Boolean(rows)} minRows={rows} value={input[key]} disabled={busy} slotProps={{ htmlInput: { maxLength: max } }} onChange={event => setInput(current => ({ ...current, [key]: event.target.value }))} />)}
+        <TranslationComparison text={input.originalDescription} disabled={busy} onApply={translatedDescription => setInput(current => ({ ...current, translatedDescription }))} />
         <TextField label="数量" required type="number" slotProps={{ htmlInput: { min: 0, step: 'any' } }} value={quantityText} disabled={busy} onChange={event => setQuantityText(event.target.value)} />
         <TextField label="希望納期" type="date" slotProps={{ inputLabel: { shrink: true } }} value={input.requestedDeliveryDate} disabled={busy} onChange={event => setInput(current => ({ ...current, requestedDeliveryDate: event.target.value }))} />
         <TextField label="状態" select value={input.status} disabled={busy} onChange={event => setInput(current => ({ ...current, status: event.target.value as RfqItemInput['status'] }))}>

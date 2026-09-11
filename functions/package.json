@@ -7,7 +7,7 @@
   "main": "lib/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test test/rakuten.test.cjs"
+    "test": "npm run build && node --test test/rakuten.test.cjs test/translation.test.cjs"
   },
   "dependencies": {
     "@google-cloud/secret-manager": "^6.1.0",

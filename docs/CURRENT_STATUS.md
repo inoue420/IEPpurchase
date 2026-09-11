@@ -81,3 +81,11 @@ firestore.rulesをieppurchaseへデプロイ済み。Firestore Emulator Rulesテ
 - 認証済み画面での検索→候補保存はユーザー確認待ち（ブラウザ自動操作がsandbox起動エラー）。フロントHostingデプロイは未実施。
 - 管理シートIEP-P2-013をユーザー確認待ちへ更新。詳細・操作手順: docs/IEP-P2-013.md。
 - 次の作業はIEP-P2-013のユーザー確認と完了記録。未依頼のPhase 3実装へ進まない。
+## IEP-P3-002 freee OAuthコールバック・Secret設定（2026-09-11・Secret登録待ち）
+- 認証済み利用者だけが開始できるfreee OAuth認可導線と、事業所選択付き認可URLを追加。
+- 10分で失効するランダムstateをハッシュ化して照合し、コールバック時に一度だけ消費する。
+- 認可コードをサーバー側でトークンへ交換し、アクセストークンとリフレッシュトークンをGoogle Secret Managerの新しいSecretバージョンとして保存する。ブラウザ、Firestore、ログには保存しない。
+- freee連携画面、Callable Function、HTTPSコールバックを実装済み。見積書作成・送付は実装・実行していない。
+- 自動確認: typecheck、lint、production build、単体テスト82件、Functions build、Functionsテスト5件成功。
+- `FREEE_CLIENT_ID` / `FREEE_CLIENT_SECRET` / `FREEE_OAUTH_TOKENS` の登録、および `beginFreeeOAuth` と `freeeOAuthCallback` の本番デプロイを完了。Cloud Functions URL形式のコールバックで無効stateをHTTP 400として拒否することを確認。`r`n- 次の作業は、実行サービスアカウント `1021971000186-compute@developer.gserviceaccount.com` に `FREEE_OAUTH_TOKENS` の Secret Manager Secret Version Adder を付与し、freeeアプリへ `https://asia-northeast1-ieppurchase.cloudfunctions.net/freeeOAuthCallback` を登録した後のOAuth実機確認。
+

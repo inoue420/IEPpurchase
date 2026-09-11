@@ -125,3 +125,4 @@ export const cancelSourcingDecision = onCall({ region: 'asia-northeast1', invoke
 })
 
 export { searchRakutenItems } from './rakuten'
+export { beginFreeeOAuth, freeeOAuthCallback } from './freee'

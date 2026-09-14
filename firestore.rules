@@ -174,6 +174,15 @@ service cloud.firestore {
       allow delete: if false;
     }
     match /salesQuotes/{rfqId} {
+      // Prices, immutable saved revisions and external results are server-owned.
+      match /freeeExports/{exportId} {
+        allow get, list: if isSignedIn();
+        allow write: if false;
+        match /{historyCollection}/{historyId} {
+          allow get, list: if isSignedIn() && historyCollection in ['events', 'revisions'];
+          allow write: if false;
+        }
+      }
       function validSalesQuote(d) {
         return d.keys().hasAll(['rfqId', 'status', 'confirmedAt', 'createdAt', 'updatedAt'])
           && d.keys().hasOnly(['rfqId', 'status', 'confirmedAt', 'createdAt', 'updatedAt'])

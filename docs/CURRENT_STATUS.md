@@ -12,7 +12,7 @@
 IEPpurchase 資材調達管理システム
 
 ## 現在Phase・状態
-Phase 3 — IEP-P3-002 freee OAuth連携（完了・ユーザー確認OK）。
+Phase 3 — IEP-P3-004 販売見積基盤・freee翻訳明細転記（完了・ユーザー確認OK）。
 
 仕入先見積添付、購入候補比較、数量採用・解除、履歴、Firestore／Storage Rulesを本番反映済み。2026-09-10に採用成功・数量超過拒否・解除を確認し、候補原本のサーバー再検証と採用中品目ロックを追加反映した。
 
@@ -105,3 +105,12 @@ firestore.rulesをieppurchaseへデプロイ済み。Firestore Emulator Rulesテ
 - 一括確定後は原文・訳文・出力文をスナップショットとして保持し、RFQ品目の後日の変更では上書きされない。Firestore Rulesでも確定後のヘッダー・明細更新を拒否する。
 - 自動確認: typecheck、lint、production build、単体テスト82件、Firestore Rulesテスト成功。
 - Firestore RulesとHostingを本番反映済み。ユーザー動作確認OKを受領し、Google Drive管理シートのIEP-P3-003を完了・Codex確認OK・ユーザー確認OKへ更新済み。
+
+## IEP-P3-004 販売見積基盤・freeeへの翻訳明細転記（2026-09-14・完了／ユーザー確認OK）
+- ユーザーの「基盤も実装しましょう」により、販売単価、税区分・税率・端数処理、ヘッダー、金額計算、保存版・履歴を追加。
+- P3-003の確定出力文・品番・数量を保持し、freee摘要255文字と未翻訳確認を検証。送信前プレビューと明示登録操作を追加。
+- サーバーで保存版・接続事業所を照合し、同時送信の重複を防止。明示拒否は再試行可能、結果不明時は再作成を停止して作成済みIDで復旧する。
+- freeeExports配下はCallableのみ更新可能。原文・訳文・販売価格・送信Snapshot・結果履歴を保持。
+- typecheck、lint、フロントbuild、Functions build、単体102件、Functions既存9件、Firestore Emulator124件成功。freeeとSecret Managerはテストでモック化し実登録なし。
+- Firestore Rules、Hosting、saveSalesQuotePricing／sendFreeeQuotation／reconcileFreeeQuotation Functionsを2026-09-14に本番反映済み。先頭ゼロ付きfreee取引先IDを保存時に受け付ける。ブラウザ操作・実freee帳票確認はユーザー確認待ち。OAuthの期限切れ時は既存画面で再認可する（自動refreshは未追加）。
+- ユーザー確認: 本番で販売見積の保存成功を確認。Google Drive管理シートを完了・Codex確認OK・ユーザー確認OKへ更新済み。\n- 詳細と動作確認手順: docs/IEP-P3-004.md。次はIEP-P3-005。

@@ -2,6 +2,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.record = record;
 exports.parseQuoteSettings = parseQuoteSettings;
+exports.hasUnsupportedFreeeDescription = hasUnsupportedFreeeDescription;
+exports.freeeDescription = freeeDescription;
 exports.buildQuotePreview = buildQuotePreview;
 exports.toFreeePayload = toFreeePayload;
 function record(value) {
@@ -69,6 +71,14 @@ function millis(value) {
 function divide(amount, divisor, method) {
     return (amount + (method === 'round_up' ? divisor - 1n : method === 'round' ? divisor / 2n : 0n)) / divisor;
 }
+function hasUnsupportedFreeeDescription(value) {
+    return /[\p{Cc}\p{Zl}\p{Zp}]/u.test(value);
+}
+function freeeDescription(partNumber, outputDescription) {
+    // Keep source text intact; only the external display description is single-line.
+    return (partNumber ? partNumber + ' ' + outputDescription : outputDescription)
+        .replace(/\r\n|[\r\n\t\p{Zl}\p{Zp}]/gu, ' ');
+}
 function buildQuotePreview(settings, source) {
     if (!source.length || source.length > 100 || source.length !== settings.prices.length || new Set(source.map(s => s.rfqItemId)).size !== source.length)
         throw new Error('確定明細と販売単価の行数が一致しません。');
@@ -81,9 +91,11 @@ function buildQuotePreview(settings, source) {
         text(s.outputDescription, `明細${s.lineNo}の確定出力文`, 5000);
         text(s.partNumber, '品番', 200, false);
         text(s.unit, '単位', 255);
-        const description = s.partNumber ? `${s.partNumber}\n${s.outputDescription}` : s.outputDescription;
+        const description = freeeDescription(s.partNumber, s.outputDescription);
+        if (hasUnsupportedFreeeDescription(description))
+            throw new Error(`明細${s.lineNo}：摘要に送信できない制御文字があります。品番・確定出力文を確認してください。`);
         if ([...description].length > 255)
-            throw new Error(`明細${s.lineNo}：品番・改行を含めるとfreeeの摘要上限255文字を超えます（${[...description].length}文字）。翻訳明細の新しい版が必要です。`);
+            throw new Error(`明細${s.lineNo}：品番・区切りスペースを含めるとfreeeの摘要上限255文字を超えます（${[...description].length}文字）。翻訳明細の新しい版が必要です。`);
         if (!s.translatedDescription.trim() || /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(s.outputDescription))
             warnings.push(`明細${s.lineNo}：登録英訳が未入力、または出力文に日本語が含まれています。`);
         if (!Number.isFinite(s.quantity) || s.quantity <= 0 || s.quantity > 99_999_999.999 || !/^\d+(\.\d{1,3})?$/.test(String(s.quantity)))

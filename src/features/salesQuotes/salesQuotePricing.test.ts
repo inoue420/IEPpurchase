@@ -9,14 +9,22 @@ const payload = () => toFreeePayload(preview(), 456, 'IEPpurchase:rfq:v1')
 const response = (change: Record<string, unknown> = {}) => ({ quotation: { id: 1, quotation_number: 'Q-1', company_id: 456, partner_id: 123, total_amount: 220, amount_tax: 20, lines: payload().lines, report_url: 'https://invoice.freee.co.jp/reports/1', ...change } })
 
 describe('sales quote calculations and immutable translated lines', () => {
-  it('keeps descriptions, newlines, part numbers, quantities and prices without retranslation', () => {
+  it('preserves source newlines while sending a single-line description without retranslation', () => {
     const original = structuredClone(line), p = preview(), data = payload()
     expect(line).toEqual(original)
     expect(p).toMatchObject({ subtotal: 200, tax: 20, total: 220 })
-    expect(data.lines[0]).toMatchObject({ description: 'B-01\nHex bolt\nStainless steel', quantity: 2, unit: 'pcs', unit_price: '100.125', withholding: false })
+    expect(data.lines[0]).toMatchObject({ description: 'B-01 Hex bolt Stainless steel', quantity: 2, unit: 'pcs', unit_price: '100.125', withholding: false })
     expect(data).not.toHaveProperty('expiration_date')
     expect(data).not.toHaveProperty('quotation_number')
     expect(JSON.stringify(data)).not.toContain('六角ボルト')
+  })
+  it('normalizes CRLF, tabs and line separators and rejects other control characters', () => {
+    const source = { ...line, outputDescription: 'Hex\r\nbolt\tSteel\u2028M10\u2029End' }
+    const p = buildQuotePreview(settings(), [source])
+    expect(p.lines[0].description).toBe('B-01 Hex bolt Steel M10 End')
+    expect(p.lines[0].outputDescription).toBe(source.outputDescription)
+    expect(toFreeePayload(p, 456, 'marker').lines[0].description).toBe(p.lines[0].description)
+    expect(() => buildQuotePreview(settings(), [{ ...line, outputDescription: 'Hex' + String.fromCharCode(0) + 'bolt' }])).toThrow('制御文字')
   })
   it('rounds tax once per rate group, including inclusive prices', () => {
     const two = [line, { ...line, rfqItemId: 'b', lineNo: 2 }]
@@ -93,5 +101,35 @@ describe('freee transport uses fake requests only', () => {
     expect(freeeResult(response({ total_amount: 999 }), payload(), 220, 20).verification).toBe('needs_review')
     expect(freeeResult(response({ lines: [{ ...payload().lines[0], description: 'changed' }] }), payload(), 220, 20).verification).toBe('needs_review')
     expect(freeeResult(response({ report_url: 'https://freee.co.jp.attacker.test/a' }), payload(), 220, 20).reportUrl).toBe('')
+  })
+})
+
+describe('freee rejection diagnostics', () => {
+  it('returns documented validation reasons with a single request and redacts credentials', async () => {
+    let calls = 0
+    const fetcher: typeof fetch = async () => {
+      calls++
+      return new Response(JSON.stringify({ errors: [{ type: 'validation', messages: ['見積書番号を入力してください', 'credential SECRET', 'Bearer OTHER-TOKEN'] }], rawPayload: 'PRIVATE' }), { status: 400 })
+    }
+    let message = ''
+    try { await createFreeeQuotation(payload(), 'SECRET', 220, 20, fetcher) } catch (error) { message = (error as Error).message }
+    expect(calls).toBe(1)
+    expect(message).toContain('見積書番号を入力してください')
+    expect(message).not.toContain('SECRET')
+    expect(message).not.toContain('OTHER-TOKEN')
+    expect(message).not.toContain('PRIVATE')
+    expect(message).not.toContain('再認可')
+  })
+  it('keeps definite rejection retryable even for malformed or excessive error bodies', async () => {
+    for (const body of ['<html>PRIVATE</html>', '{}', JSON.stringify({ errors: [null, { messages: [null, {}] }] }), 'x'.repeat(32769)]) {
+      await expect(createFreeeQuotation(payload(), 'fake', 220, 20, async () => new Response(body, { status: 400 }))).rejects.toMatchObject({ retryable: true })
+    }
+  })
+  it('bounds error details and never converts uncertain server failures into retries', async () => {
+    const body = JSON.stringify({ errors: [{ messages: Array.from({ length: 20 }, (_, i) => String(i) + 'x'.repeat(1000)) }] })
+    let message = ''
+    try { await createFreeeQuotation(payload(), 'fake', 220, 20, async () => new Response(body, { status: 422 })) } catch (error) { message = (error as Error).message }
+    expect(message.length).toBeLessThan(1800)
+    await expect(createFreeeQuotation(payload(), 'fake', 220, 20, async () => new Response(body, { status: 500 }))).rejects.toMatchObject({ retryable: false })
   })
 })

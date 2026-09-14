@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.reconcileFreeeQuotation = exports.sendFreeeQuotation = exports.saveSalesQuotePricing = void 0;
+exports.reconcileFreeeQuotation = exports.sendFreeeQuotation = exports.saveSalesQuotePricing = exports.searchFreeePartners = void 0;
+const freeePartners_1 = require("./freeePartners");
 const node_crypto_1 = require("node:crypto");
 const secret_manager_1 = require("@google-cloud/secret-manager");
 const firestore_1 = require("firebase-admin/firestore");
@@ -48,6 +49,20 @@ function mutable(status) { return status === 'draft' || status === 'failed'; }
 function eventData(userId, action, revision, values = {}) {
     return { action, revision, userId, createdAt: firestore_1.FieldValue.serverTimestamp(), ...values };
 }
+exports.searchFreeePartners = (0, https_1.onCall)(options, async (request) => {
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'ログインが必要です。');
+    const data = input(request.data), keyword = data.keyword ?? '', offset = data.offset ?? 0;
+    if (typeof keyword !== 'string' || keyword.length > 255 || !Number.isSafeInteger(offset) || Number(offset) < 0 || Number(offset) > 1_000_000)
+        throw new https_1.HttpsError('invalid-argument', '検索条件が不正です。');
+    const { companyId, accessToken } = await connection(true);
+    const params = new URLSearchParams({ company_id: String(companyId), keyword: keyword.trim(), offset: String(offset), limit: '50' });
+    const body = await (0, freeePartners_1.readFreeePartners)('?' + params, accessToken);
+    if (!Array.isArray(body.partners))
+        throw new https_1.HttpsError('unavailable', 'freee取引先の応答を確認できません。再検索してください。');
+    const partners = body.partners.filter(p => (0, salesQuoteModel_1.record)(p).available !== false).map(freeePartners_1.parsePartner);
+    return { companyId, partners, nextOffset: body.partners.length === 50 ? Number(offset) + 50 : null };
+});
 exports.saveSalesQuotePricing = (0, https_1.onCall)(options, async (request) => {
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'ログインが必要です。');
@@ -61,7 +76,18 @@ exports.saveSalesQuotePricing = (0, https_1.onCall)(options, async (request) => 
     catch (error) {
         throw new https_1.HttpsError('invalid-argument', error.message);
     }
-    const { companyId } = await connection(false);
+    const { companyId, accessToken } = await connection(data.partnerCompanyId !== undefined);
+    let partnerName;
+    // Legacy clients retain their save format. The picker supplies its searched company.
+    if (data.partnerCompanyId !== undefined) {
+        if (data.partnerCompanyId !== companyId)
+            throw new https_1.HttpsError('failed-precondition', '接続事業所が変わりました。freee取引先を検索し直してください。');
+        const body = await (0, freeePartners_1.readFreeePartners)('/' + Number(settings.partnerId) + '?company_id=' + companyId, accessToken);
+        const partner = (0, freeePartners_1.parsePartner)(body.partner);
+        if (partner.id !== Number(settings.partnerId))
+            throw new https_1.HttpsError('failed-precondition', 'freee取引先が一致しません。選び直してください。');
+        partnerName = partner.name;
+    }
     const db = (0, firestore_1.getFirestore)(), ref = exportRef(rfqId), userId = request.auth.uid;
     return db.runTransaction(async (transaction) => {
         const [rfq, quote, items, current] = await Promise.all([
@@ -92,7 +118,7 @@ exports.saveSalesQuotePricing = (0, https_1.onCall)(options, async (request) => 
         const revision = (previous?.revision ?? 0) + 1;
         const marker = `IEPpurchase:${rfqId}:v${revision}`;
         const payload = (0, salesQuoteModel_1.toFreeePayload)(preview, companyId, marker);
-        const saved = { rfqId, revision, status: 'draft', companyId,
+        const saved = { rfqId, revision, status: 'draft', companyId, ...(partnerName ? { partnerName } : {}),
             customerId: rfq.get('customerId'), customerName: rfq.get('customerName'),
             preview, marker, payload, digest: hash({ payload, preview }), attempt: previous?.attempt ?? 0, result: null, error: '' };
         if (Buffer.byteLength(JSON.stringify(saved), 'utf8') > 750_000)
@@ -124,6 +150,8 @@ exports.sendFreeeQuotation = (0, https_1.onCall)(options, async (request) => {
             throw new https_1.HttpsError('failed-precondition', '接続事業所が変わっています。プレビューを保存し直してください。');
         if (!rfq.exists || rfq.get('status') === 'cancelled' || rfq.get('customerId') !== saved.customerId)
             throw new https_1.HttpsError('failed-precondition', 'RFQの状態または顧客が変更されました。');
+        if (saved.payload.lines.some(line => (0, salesQuoteModel_1.hasUnsupportedFreeeDescription)(line.description)))
+            throw new https_1.HttpsError('failed-precondition', '保存済みの摘要に改行・制御文字が含まれています。「販売見積を保存」で新しい版を作成し、内容を確認してください。');
         transaction.update(ref, { status: 'sending', attempt: saved.attempt + 1, startedAt: firestore_1.FieldValue.serverTimestamp(), updatedAt: firestore_1.FieldValue.serverTimestamp(), error: '' });
         transaction.create(ref.collection('events').doc(), eventData(userId, 'sending', saved.revision, { attempt: saved.attempt + 1, digest: saved.digest }));
         return { saved, alreadySent: false };

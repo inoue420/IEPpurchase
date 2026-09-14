@@ -76,6 +76,14 @@ function millis(value: string): bigint {
 function divide(amount: bigint, divisor: bigint, method: Fraction): bigint {
   return (amount + (method === 'round_up' ? divisor - 1n : method === 'round' ? divisor / 2n : 0n)) / divisor
 }
+export function hasUnsupportedFreeeDescription(value: string): boolean {
+  return /[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)
+}
+export function freeeDescription(partNumber: string, outputDescription: string): string {
+  // Keep source text intact; only the external display description is single-line.
+  return (partNumber ? partNumber + ' ' + outputDescription : outputDescription)
+    .replace(/\r\n|[\r\n\t\p{Zl}\p{Zp}]/gu, ' ')
+}
 export function buildQuotePreview(settings: QuoteSettings, source: ConfirmedLine[]): QuotePreview {
   if (!source.length || source.length > 100 || source.length !== settings.prices.length || new Set(source.map(s => s.rfqItemId)).size !== source.length) throw new Error('確定明細と販売単価の行数が一致しません。')
   const warnings: string[] = []
@@ -85,8 +93,9 @@ export function buildQuotePreview(settings: QuoteSettings, source: ConfirmedLine
     if (!price) throw new Error('確定明細に対応する販売単価がありません。')
     text(s.outputDescription, `明細${s.lineNo}の確定出力文`, 5000)
     text(s.partNumber, '品番', 200, false); text(s.unit, '単位', 255)
-    const description = s.partNumber ? `${s.partNumber}\n${s.outputDescription}` : s.outputDescription
-    if ([...description].length > 255) throw new Error(`明細${s.lineNo}：品番・改行を含めるとfreeeの摘要上限255文字を超えます（${[...description].length}文字）。翻訳明細の新しい版が必要です。`)
+    const description = freeeDescription(s.partNumber, s.outputDescription)
+    if (hasUnsupportedFreeeDescription(description)) throw new Error(`明細${s.lineNo}：摘要に送信できない制御文字があります。品番・確定出力文を確認してください。`)
+    if ([...description].length > 255) throw new Error(`明細${s.lineNo}：品番・区切りスペースを含めるとfreeeの摘要上限255文字を超えます（${[...description].length}文字）。翻訳明細の新しい版が必要です。`)
     if (!s.translatedDescription.trim() || /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(s.outputDescription)) warnings.push(`明細${s.lineNo}：登録英訳が未入力、または出力文に日本語が含まれています。`)
     if (!Number.isFinite(s.quantity) || s.quantity <= 0 || s.quantity > 99_999_999.999 || !/^\d+(\.\d{1,3})?$/.test(String(s.quantity))) throw new Error(`明細${s.lineNo}：freeeへ送信できる数量は小数3桁以内、99999999.999以下です。`)
     const amount = divide(millis(String(s.quantity)) * millis(price.unitPrice), 1_000_000n, settings.lineAmountFraction)

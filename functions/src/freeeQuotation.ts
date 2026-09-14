@@ -1,9 +1,10 @@
+import { parsePartner, readFreeePartners } from './freeePartners'
 import { createHash } from 'node:crypto'
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager'
 import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore'
 import { defineSecret } from 'firebase-functions/params'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
-import { buildQuotePreview, parseQuoteSettings, record, toFreeePayload, type ConfirmedLine, type QuotePreview, type FreeeQuotePayload } from './salesQuoteModel'
+import { hasUnsupportedFreeeDescription, buildQuotePreview, parseQuoteSettings, record, toFreeePayload, type ConfirmedLine, type QuotePreview, type FreeeQuotePayload } from './salesQuoteModel'
 import { createFreeeQuotation, FreeeRequestError, freeeResult, type FreeeResult } from './freeeQuotationTransport'
 
 const tokensSecret = defineSecret('FREEE_OAUTH_TOKENS')
@@ -31,6 +32,7 @@ async function connection(requireValidToken: boolean): Promise<{ companyId: numb
   } catch { throw new HttpsError('failed-precondition', 'freeeの接続情報が未設定・期限切れ、または読み取り不可です。「freee連携」で再認可してください。') }
 }
 interface ExportRecord {
+  partnerName?: string
   rfqId: string; revision: number; status: 'draft' | 'sending' | 'failed' | 'uncertain' | 'sent'
   preview: QuotePreview; companyId: number; customerName: string; customerId: string
   digest: string; marker: string; payload: FreeeQuotePayload; attempt: number
@@ -42,13 +44,34 @@ function eventData(userId: string, action: string, revision: number, values: Rec
   return { action, revision, userId, createdAt: FieldValue.serverTimestamp(), ...values }
 }
 
+export const searchFreeePartners = onCall(options, async request => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
+  const data = input(request.data), keyword = data.keyword ?? '', offset = data.offset ?? 0
+  if (typeof keyword !== 'string' || keyword.length > 255 || !Number.isSafeInteger(offset) || Number(offset) < 0 || Number(offset) > 1_000_000) throw new HttpsError('invalid-argument', '検索条件が不正です。')
+  const { companyId, accessToken } = await connection(true)
+  const params = new URLSearchParams({ company_id: String(companyId), keyword: keyword.trim(), offset: String(offset), limit: '50' })
+  const body = await readFreeePartners('?' + params, accessToken)
+  if (!Array.isArray(body.partners)) throw new HttpsError('unavailable', 'freee取引先の応答を確認できません。再検索してください。')
+  const partners = body.partners.filter(p => record(p).available !== false).map(parsePartner)
+  return { companyId, partners, nextOffset: body.partners.length === 50 ? Number(offset) + 50 : null }
+})
+
 export const saveSalesQuotePricing = onCall(options, async request => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
   const data = input(request.data), rfqId = id(data.rfqId), expectedRevision = data.expectedRevision
   if (!Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 0) throw new HttpsError('invalid-argument', '保存版番号が不正です。')
   let settings
   try { settings = parseQuoteSettings(data.settings) } catch (error) { throw new HttpsError('invalid-argument', (error as Error).message) }
-  const { companyId } = await connection(false)
+  const { companyId, accessToken } = await connection(data.partnerCompanyId !== undefined)
+  let partnerName: string | undefined
+  // Legacy clients retain their save format. The picker supplies its searched company.
+  if (data.partnerCompanyId !== undefined) {
+    if (data.partnerCompanyId !== companyId) throw new HttpsError('failed-precondition', '接続事業所が変わりました。freee取引先を検索し直してください。')
+    const body = await readFreeePartners('/' + Number(settings.partnerId) + '?company_id=' + companyId, accessToken)
+    const partner = parsePartner(body.partner)
+    if (partner.id !== Number(settings.partnerId)) throw new HttpsError('failed-precondition', 'freee取引先が一致しません。選び直してください。')
+    partnerName = partner.name
+  }
   const db = getFirestore(), ref = exportRef(rfqId), userId = request.auth.uid
   return db.runTransaction(async transaction => {
     const [rfq, quote, items, current] = await Promise.all([
@@ -70,7 +93,7 @@ export const saveSalesQuotePricing = onCall(options, async request => {
     const revision = (previous?.revision ?? 0) + 1
     const marker = `IEPpurchase:${rfqId}:v${revision}`
     const payload = toFreeePayload(preview, companyId, marker)
-    const saved: ExportRecord = { rfqId, revision, status: 'draft', companyId,
+    const saved: ExportRecord = { rfqId, revision, status: 'draft', companyId, ...(partnerName ? { partnerName } : {}),
       customerId: rfq.get('customerId'), customerName: rfq.get('customerName'),
       preview, marker, payload, digest: hash({ payload, preview }), attempt: previous?.attempt ?? 0, result: null, error: '' }
     if (Buffer.byteLength(JSON.stringify(saved), 'utf8') > 750_000) throw new HttpsError('invalid-argument', '保存する原文・翻訳文が大きすぎます。見積を分けてください。')
@@ -95,6 +118,7 @@ export const sendFreeeQuotation = onCall(options, async request => {
     if (!mutable(saved.status)) throw new HttpsError('failed-precondition', '送信中または結果不明のため再作成できません。作成済み見積書IDを照合してください。')
     if (token.companyId !== saved.companyId) throw new HttpsError('failed-precondition', '接続事業所が変わっています。プレビューを保存し直してください。')
     if (!rfq.exists || rfq.get('status') === 'cancelled' || rfq.get('customerId') !== saved.customerId) throw new HttpsError('failed-precondition', 'RFQの状態または顧客が変更されました。')
+    if (saved.payload.lines.some(line => hasUnsupportedFreeeDescription(line.description))) throw new HttpsError('failed-precondition', '保存済みの摘要に改行・制御文字が含まれています。「販売見積を保存」で新しい版を作成し、内容を確認してください。')
     transaction.update(ref, { status: 'sending', attempt: saved.attempt + 1, startedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), error: '' })
     transaction.create(ref.collection('events').doc(), eventData(userId, 'sending', saved.revision, { attempt: saved.attempt + 1, digest: saved.digest }))
     return { saved, alreadySent: false }

@@ -1,12 +1,15 @@
+import { salesQuoteSettingsEqual } from './salesQuoteSettingsEqual'
 import { useEffect, useState } from 'react'
 import { Alert, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, Link, MenuItem, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from '@mui/material'
 import { Timestamp, collection, doc, limit, onSnapshot, orderBy, query } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
 import { firestore, firebaseFunctions } from '../../firebase/firebase'
-import { buildQuotePreview, parseQuoteSettings, type QuotePreview, type QuoteSettings } from '../../../functions/src/salesQuoteModel'
+import { freeeDescription, hasUnsupportedFreeeDescription, buildQuotePreview, parseQuoteSettings, type QuotePreview, type QuoteSettings } from '../../../functions/src/salesQuoteModel'
 import type { SalesQuoteTranslationItem } from './salesQuoteTranslationRepository'
+import { FreeePartnerPicker, type SelectedFreeePartner } from './FreeePartnerPicker'
 
 interface SavedQuote {
+  partnerName?: string
   revision: number; digest: string; companyId: number; customerName: string; marker: string
   status: 'draft' | 'sending' | 'failed' | 'uncertain' | 'sent'; preview: QuotePreview; error: string
   result: { id: number; number: string; reportUrl: string; total: number | null; tax: number | null; verification: 'matched' | 'needs_review' } | null
@@ -40,18 +43,30 @@ function Editor({ rfqId, items, saved }: { rfqId: string; items: SalesQuoteTrans
   const [baseRevision, setBaseRevision] = useState(saved?.revision ?? 0)
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [confirming, setConfirming] = useState<SavedQuote | null>(null)
   const [quotationId, setQuotationId] = useState('')
+  const [partner, setPartner] = useState<SelectedFreeePartner | null>(() => saved?.partnerName ? { id: Number(saved.preview.settings.partnerId), name: saved.partnerName, companyId: saved.companyId } : null)
+  // Firestore arrives after the editor has mounted. Start an existing draft from
+  // that saved version instead of the empty defaults, so it can be revised.
+  useEffect(() => {
+    if (!saved || baseRevision !== 0) return
+    setSettings(saved.preview.settings)
+    setBaseRevision(saved.revision)
+    setPartner(saved.partnerName ? { id: Number(saved.preview.settings.partnerId), name: saved.partnerName, companyId: saved.companyId } : null)
+  }, [baseRevision, saved])
   const locked = !!saved && !['draft', 'failed'].includes(saved.status)
   const stale = (saved?.revision ?? 0) !== baseRevision
-  const dirty = !saved || JSON.stringify(settings) !== JSON.stringify(saved.preview.settings)
+  const needsDescriptionResave = !!saved?.preview.lines.some(line => hasUnsupportedFreeeDescription(line.description))
+  const dirty = needsDescriptionResave || !saved || !salesQuoteSettingsEqual(settings, saved.preview.settings) || partner?.name !== saved.partnerName || (!!partner && partner.companyId !== saved.companyId)
   let localPreview: QuotePreview | null = null, validation = ''
   try { localPreview = buildQuotePreview(parseQuoteSettings(settings), items) } catch (cause) { validation = cause instanceof Error ? cause.message : '入力を確認してください。' }
   function update<K extends keyof QuoteSettings>(key: K, value: QuoteSettings[K]) { setSettings(previous => ({ ...previous, [key]: value })) }
   async function save() {
+    if (!partner) { setError('freee取引先を名前で選択してください。'); return }
     setBusy(true); setError('')
     try {
       const call = httpsCallable<unknown, SavedQuote>(firebaseFunctions, 'saveSalesQuotePricing')
-      const { data } = await call({ rfqId, settings, expectedRevision: baseRevision })
+      const { data } = await call({ rfqId, settings, expectedRevision: baseRevision, partnerCompanyId: partner.companyId })
       setSettings(data.preview.settings); setBaseRevision(data.revision)
+      setPartner({ id: Number(data.preview.settings.partnerId), name: data.partnerName ?? partner.name, companyId: data.companyId })
     } catch (cause) { setError(cause instanceof Error ? cause.message : '保存できませんでした。') } finally { setBusy(false) }
   }
   async function send() {
@@ -75,10 +90,10 @@ function Editor({ rfqId, items, saved }: { rfqId: string; items: SalesQuoteTrans
     {saved && <Alert severity={saved.status === 'sent' ? 'success' : saved.status === 'draft' ? 'info' : 'warning'}>保存版 {saved.revision}：{statusLabels[saved.status]} ／ 接続事業所ID：{saved.companyId} ／ 顧客：{saved.customerName}</Alert>}
     {saved?.error && <Alert severity="warning">{saved.error}</Alert>}
     {!locked && <>
-      {stale && <Alert severity="warning" action={<Button disabled={busy} onClick={() => { if (saved) { setSettings(saved.preview.settings); setBaseRevision(saved.revision) } }}>保存済みを読み直す</Button>}>保存版が更新されています。入力内容を確認してから読み直してください。</Alert>}
+      {stale && <Alert severity="warning" action={<Button disabled={busy} onClick={() => { if (saved) { setSettings(saved.preview.settings); setBaseRevision(saved.revision); setPartner(saved.partnerName ? { id: Number(saved.preview.settings.partnerId), name: saved.partnerName, companyId: saved.companyId } : null) } }}>保存済みを読み直す</Button>}>保存版が更新されています。入力内容を確認してから読み直してください。</Alert>}
       <Box component="fieldset" disabled={busy || stale} sx={{ border: 0, p: 0, m: 0 }}><Stack spacing={2}>
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
-          <TextField required label="freee取引先ID" value={settings.partnerId} onChange={e => update('partnerId', e.target.value)} helperText="freeeに登録済みの顧客IDを入力" />
+          <FreeePartnerPicker value={partner} disabled={busy || stale} onChange={selected => { setPartner(selected); update('partnerId', String(selected.id)) }} />
           <TextField required label="件名" value={settings.subject} onChange={e => update('subject', e.target.value)} sx={{ flex: 1 }} />
           <TextField select label="敬称" value={settings.partnerTitle} onChange={e => update('partnerTitle', e.target.value as QuoteSettings['partnerTitle'])}>{['御中', '様', '(空白)'].map(value => <MenuItem key={value} value={value}>{value}</MenuItem>)}</TextField>
         </Stack>
@@ -94,22 +109,24 @@ function Editor({ rfqId, items, saved }: { rfqId: string; items: SalesQuoteTrans
         <TableContainer><Table size="small"><TableHead><TableRow><TableCell>確定明細</TableCell><TableCell>数量</TableCell><TableCell>販売単価（円）</TableCell><TableCell>税率</TableCell></TableRow></TableHead><TableBody>{items.map(item => {
           const price = settings.prices.find(p => p.rfqItemId === item.id)
           const changePrice = (change: Partial<QuoteSettings['prices'][number]>) => update('prices', settings.prices.map(p => p.rfqItemId === item.id ? { ...p, ...change } : p))
-          return <TableRow key={item.id}><TableCell sx={{ minWidth: 220, whiteSpace: 'pre-wrap' }}>{item.partNumber}<br />{item.outputDescription}<Typography variant="caption" display="block">摘要 {Array.from(item.partNumber ? `${item.partNumber}\n${item.outputDescription}` : item.outputDescription).length}/255文字</Typography>{!item.translatedDescription.trim() && <Typography color="warning.main" variant="caption">登録英訳なし：出力文の確認が必要</Typography>}</TableCell><TableCell>{item.quantity} {item.unit}</TableCell><TableCell><TextField required size="small" value={price?.unitPrice ?? ''} onChange={e => changePrice({ unitPrice: e.target.value })} slotProps={{ htmlInput: { inputMode: 'decimal', 'aria-label': `明細${item.lineNo}の販売単価` } }} /></TableCell><TableCell><TextField select size="small" value={price?.reducedTaxRate ? '8r' : String(price?.taxRate ?? 10)} onChange={e => changePrice({ taxRate: e.target.value === '8r' ? 8 : Number(e.target.value) as 0 | 8 | 10, reducedTaxRate: e.target.value === '8r' })} slotProps={{ htmlInput: { 'aria-label': `明細${item.lineNo}の税率` } }}><MenuItem value="10">10%</MenuItem><MenuItem value="8r">8%（軽減）</MenuItem><MenuItem value="8">8%</MenuItem><MenuItem value="0">0%</MenuItem></TextField></TableCell></TableRow>
+          return <TableRow key={item.id}><TableCell sx={{ minWidth: 220, whiteSpace: 'pre-wrap' }}>{item.partNumber}<br />{item.outputDescription}<Typography variant="caption" display="block">摘要 {Array.from(freeeDescription(item.partNumber, item.outputDescription)).length}/255文字</Typography>{!item.translatedDescription.trim() && <Typography color="warning.main" variant="caption">登録英訳なし：出力文の確認が必要</Typography>}</TableCell><TableCell>{item.quantity} {item.unit}</TableCell><TableCell><TextField required size="small" value={price?.unitPrice ?? ''} onChange={e => changePrice({ unitPrice: e.target.value })} slotProps={{ htmlInput: { inputMode: 'decimal', 'aria-label': `明細${item.lineNo}の販売単価` } }} /></TableCell><TableCell><TextField select size="small" value={price?.reducedTaxRate ? '8r' : String(price?.taxRate ?? 10)} onChange={e => changePrice({ taxRate: e.target.value === '8r' ? 8 : Number(e.target.value) as 0 | 8 | 10, reducedTaxRate: e.target.value === '8r' })} slotProps={{ htmlInput: { 'aria-label': `明細${item.lineNo}の税率` } }}><MenuItem value="10">10%</MenuItem><MenuItem value="8r">8%（軽減）</MenuItem><MenuItem value="8">8%</MenuItem><MenuItem value="0">0%</MenuItem></TextField></TableCell></TableRow>
         })}</TableBody></Table></TableContainer>
         <TextField label="見積書備考" multiline minRows={2} value={settings.note} onChange={e => update('note', e.target.value)} />
         <FormControlLabel control={<Checkbox checked={settings.translationsReviewed} onChange={e => update('translationsReviewed', e.target.checked)} />} label="登録英訳が未入力、または日本語を含む明細も、出力文が顧客向けとして適切なことを確認しました" />
       </Stack></Box>
       {validation && <Alert severity="info" sx={{ whiteSpace: 'pre-wrap' }}>{validation}</Alert>}
       {localPreview && <><Typography component="h3" variant="subtitle1">入力中のプレビュー</Typography><Preview preview={localPreview} /></>}
-      <Button variant="outlined" disabled={busy || stale || !localPreview || !dirty} onClick={() => void save()}>{busy ? '処理中…' : '販売見積を保存'}</Button>
+      <Button variant="outlined" disabled={busy || stale || !localPreview || !dirty || !partner} onClick={() => void save()}>{busy ? '処理中…' : '販売見積を保存'}</Button>
     </>}
     {saved && <>
+      <Typography>freee取引先：{saved.partnerName ?? '未確認：名前で選択して保存し直してください'}</Typography>
       <Typography component="h3" variant="subtitle1">保存済みの送信内容（版 {saved.revision}）</Typography><Preview preview={saved.preview} />
-      {!locked && <Button variant="contained" disabled={busy || dirty || stale} onClick={() => setConfirming(saved)}>freeeへの登録内容を確認</Button>}
+      {!locked && !busy && !stale && (!partner || dirty) && <Alert severity="info">{needsDescriptionResave ? '摘要の改行をスペースに変換します。入力中のプレビューを確認し、「販売見積を保存」で新しい版を作成してください。' : !partner ? 'freee取引先を選択して、販売見積を保存してください。' : '未保存の変更があります。「販売見積を保存」してから登録内容を確認してください。'}</Alert>}
+      {!locked && <Button variant="contained" disabled={busy || dirty || stale || !partner} onClick={() => setConfirming(saved)}>freeeへの登録内容を確認</Button>}
       {saved.result && <Alert severity={saved.result.verification === 'matched' ? 'success' : 'warning'}>freee見積書ID：{saved.result.id} ／ 番号：{saved.result.number || '—'} ／ freee合計：{saved.result.total === null ? '未取得' : yen(saved.result.total)}<br />{saved.result.verification === 'matched' ? '明細・金額は送信内容と一致しました。' : 'freeeの応答と送信内容に差異または未取得項目があります。帳票を確認してください。再作成は行いません。'}{saved.result.reportUrl && <><br /><Link href={saved.result.reportUrl} target="_blank" rel="noopener noreferrer">freee見積書を開く</Link></>}</Alert>}
       {['sending', 'uncertain'].includes(saved.status) && <Stack spacing={1}><Alert severity="warning">2分以上経過しても結果が確定しない場合、freeeで見積書を確認してください。社内メモ「{saved.marker}」が一致する見積書のIDで照合します。見つからない場合は管理者による調査が必要です。</Alert><TextField label="作成済みfreee見積書ID" value={quotationId} onChange={e => setQuotationId(e.target.value)} /><Button disabled={busy || !/^[1-9]\d*$/.test(quotationId)} onClick={() => void reconcile()}>freeeの作成結果を照合</Button></Stack>}
     </>}
-    <Dialog open={!!confirming} fullWidth maxWidth="lg" onClose={busy ? undefined : () => setConfirming(null)}><DialogTitle>freee見積書を作成します</DialogTitle><DialogContent>{confirming && <Stack spacing={2}><Alert severity="warning">接続事業所ID {confirming.companyId} のfreeeに新規登録します。顧客「{confirming.customerName}」とfreee取引先ID {confirming.preview.settings.partnerId} の対応を確認してください。</Alert><Preview preview={confirming.preview} /><Typography>保存版 {confirming.revision} を送信します。顧客へのメール送付は行いません。</Typography></Stack>}</DialogContent><DialogActions><Button disabled={busy} onClick={() => setConfirming(null)}>キャンセル</Button><Button variant="contained" disabled={busy || confirming?.digest !== saved?.digest || locked} onClick={() => void send()}>{busy ? '登録中…' : '確認した内容でfreeeに登録'}</Button></DialogActions></Dialog>
+    <Dialog open={!!confirming} fullWidth maxWidth="lg" onClose={busy ? undefined : () => setConfirming(null)}><DialogTitle>freee見積書を作成します</DialogTitle><DialogContent>{confirming && <Stack spacing={2}><Alert severity="warning">接続事業所ID {confirming.companyId} のfreeeに新規登録します。顧客「{confirming.customerName}」とfreee取引先「{confirming.partnerName}」（ID {confirming.preview.settings.partnerId}） の対応を確認してください。</Alert><Preview preview={confirming.preview} /><Typography>保存版 {confirming.revision} を送信します。顧客へのメール送付は行いません。</Typography></Stack>}</DialogContent><DialogActions><Button disabled={busy} onClick={() => setConfirming(null)}>キャンセル</Button><Button variant="contained" disabled={busy || confirming?.digest !== saved?.digest || locked} onClick={() => void send()}>{busy ? '登録中…' : '確認した内容でfreeeに登録'}</Button></DialogActions></Dialog>
   </Stack>
 }
 

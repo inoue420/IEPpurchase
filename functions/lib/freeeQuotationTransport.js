@@ -12,6 +12,39 @@ class FreeeRequestError extends Error {
     }
 }
 exports.FreeeRequestError = FreeeRequestError;
+async function rejectionDetails(response, token) {
+    try {
+        const raw = await response.text();
+        if (raw.length > 32_768)
+            return '';
+        const body = (0, salesQuoteModel_1.record)(JSON.parse(raw));
+        if (!Array.isArray(body.errors))
+            return '';
+        const messages = [];
+        for (const value of body.errors.slice(0, 10)) {
+            if (!value || typeof value !== 'object' || !Array.isArray(value.messages))
+                continue;
+            for (const message of value.messages.slice(0, 5)) {
+                if (typeof message !== 'string')
+                    continue;
+                // Only documented messages; no raw response or headers.
+                const safe = (token ? message.split(token).join('[非表示]') : message)
+                    .replace(/Bearer\s+\S+/gi, 'Bearer [非表示]')
+                    .replace(/\p{Cc}/gu, ' ').trim().slice(0, 300);
+                if (safe && !messages.includes(safe))
+                    messages.push(safe);
+                if (messages.length === 5)
+                    break;
+            }
+            if (messages.length === 5)
+                break;
+        }
+        return messages.length ? ' freeeの詳細：' + messages.join(' ／ ') : '';
+    }
+    catch {
+        return '';
+    }
+}
 function freeeResult(value, payload, expectedTotal, expectedTax) {
     const q = (0, salesQuoteModel_1.record)((0, salesQuoteModel_1.record)(value).quotation);
     if (!Number.isSafeInteger(q.id) || Number(q.id) <= 0 || q.company_id !== payload.company_id)
@@ -50,8 +83,12 @@ async function createFreeeQuotation(payload, token, total, tax, fetcher = fetch)
     }
     if (!response.ok) {
         const retryable = [400, 401, 403, 404, 422, 429].includes(response.status);
+        const details = retryable ? await rejectionDetails(response, token) : '';
+        const guidance = response.status === 401 ? '「freee連携」で再認可してください。'
+            : response.status === 403 ? 'freeeアプリの見積書作成権限を確認してください。'
+                : '入力内容とfreee側の設定を確認してください。';
         throw new FreeeRequestError(retryable, retryable
-            ? `freeeが登録を拒否しました（HTTP ${response.status}）。入力・権限を確認してください。401の場合はfreee連携を再認可してください。`
+            ? `freeeが登録を拒否しました（HTTP ${response.status}）。${guidance}${details}`
             : `freeeの登録結果が不明です（HTTP ${response.status}）。freeeで作成結果を確認してください。再作成は停止しています。`);
     }
     try {

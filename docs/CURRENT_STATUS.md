@@ -114,3 +114,56 @@ firestore.rulesをieppurchaseへデプロイ済み。Firestore Emulator Rulesテ
 - typecheck、lint、フロントbuild、Functions build、単体102件、Functions既存9件、Firestore Emulator124件成功。freeeとSecret Managerはテストでモック化し実登録なし。
 - Firestore Rules、Hosting、saveSalesQuotePricing／sendFreeeQuotation／reconcileFreeeQuotation Functionsを2026-09-14に本番反映済み。先頭ゼロ付きfreee取引先IDを保存時に受け付ける。ブラウザ操作・実freee帳票確認はユーザー確認待ち。OAuthの期限切れ時は既存画面で再認可する（自動refreshは未追加）。
 - ユーザー確認: 本番で販売見積の保存成功を確認。Google Drive管理シートを完了・Codex確認OK・ユーザー確認OKへ更新済み。\n- 詳細と動作確認手順: docs/IEP-P3-004.md。次はIEP-P3-005。
+
+## IEP-P3-005 帳票・一連動作確認（2026-09-14・ユーザー確認待ち）
+- 正式管理シートの受入条件に沿って結合テスト2件を追加。複数品目・改行・Unicode・小数数量・混在税率・訳文なしの手動確認、RFQ変更後のSnapshot保持、再送時のPOST一回、結果・履歴、長文と未確認訳文なしの保存拒否を検証。
+- typecheck・lint・フロントbuild・Functions build成功。単体103件、Functions9件、Firestore Emulator126件成功。
+- freeeとSecret Managerはモック。実freeeへの登録・帳票目視・ブラウザ一連操作は未実施。実帳票確認とユーザーOK後に完了とする。
+- docs/IEP-P3-005.mdに2明細・税抜320円／税29円／合計349円の確認手順を記載。テストと資料のみ変更のため本番デプロイ不要。
+- Google Drive管理シートをユーザー確認待ち／Codex確認OK／ユーザー未確認に更新済み。
+- 次の作業: P3-005の実帳票確認と完了記録。
+
+## freee取引先の名前選択（2026-09-14）
+- ユーザー指示により、freee内部IDの手入力を名前検索・選択に変更。取引先コード設定は不要。
+- searchFreeePartnersは接続事業所のGET /api/1/partnersを50件ずつ取得。名前検索・追加読み込み・空結果・認証期限切れ・権限不足に対応。ブラウザにはID・名前・コードだけを返す。
+- 保存時に選択元事業所と現在の接続を照合し、GET /api/1/partners/{id}で有効性・IDを再確認。freeeから取得した名前を保存版に保持する。
+- 旧クライアントの保存形式は互換性のため維持。新画面では名前選択が必須。登録拒否の旧見積は選び直して新しい版に保存する。送信済み・結果不明のロックは維持。
+- typecheck・lint・フロントbuild・Functions build成功。単体103件、Functions9件、Firestore Emulator130件成功。実API検索・ブラウザ操作・実帳票はユーザー確認待ち。
+- 主な変更: functions/src/freeePartners.ts、freeeQuotation.ts、src/features/salesQuotes/FreeePartnerPicker.tsx、FreeeQuotationSection.tsx。
+- 次の作業: 本番画面で取引先名を選び直し、見積を保存して登録内容と帳票を確認する。
+- 本番反映完了（2026-09-14）: searchFreeePartners作成、saveSalesQuotePricing更新、Hostingリリース成功。公開先 https://ieppurchase.web.app 。実API検索とユーザー操作確認は未実施。
+
+## P3-005 保存後の登録確認ボタン修正（2026-09-14）
+- ユーザー報告: 取引先選択・保存版2の保存後も「freeeへの登録内容を確認」が無効。
+- 原因: Callable戻り値とFirestoreのマップ項目順の違いをJSON.stringifyで比較し、同じ値でも未保存と誤判定する実装。
+- salesQuoteSettingsEqualで双方を同じスキーマの項目順へ正規化し、品目ID順で比較。実際の入力変更・不正入力・事業所変更・保存版競合の保護を維持。無効理由の案内も追加。
+- 回帰テスト: 項目順・明細順だけの違い、項目の実変更、未完成入力の3件。単体106件成功。typecheck・lint・build成功。初回並列実行はメモリ不足、1ワーカー再実行で全件成功。
+- 保存データ変更なし。Functions・Rules変更なし。実画面の再確認後に完了とする。
+
+## P3-005 freee HTTP400の拒否理由表示（2026-09-14）
+- 取引先を名前で選択し、登録確認ボタン修正後もHTTP400が継続することをユーザー画像で確認。400の原因は未確定。
+- これまで捨てていた公式エラー形式errors[].messagesを、次回の明示登録時から画面・既存の結果履歴へ反映する。既存の過去エラー詳細は復元できない。
+- 応答本文やヘッダー全体は保存しない。アクセストークンとBearer値を伏せ、最大5件・各300文字に制限。400で401の再認可案内を出す紛らわしい文言も修正。
+- 不正JSON・HTML・過大な本文・詳細読取失敗では汎用エラーへ戻る。HTTP拒否の再試行可否と、結果不明時の再作成停止は維持。
+- typecheck・lint・フロントbuild成功。単体109件成功、lint修正後の関連24件も成功。freeeへの実再送信はしていない。
+- 次の作業: 修正反映後の明示登録で返される「freeeの詳細」を基に原因を修正し、帳票を確認する。
+
+- 反映結果: sendFreeeQuotation の本番更新成功。Firestore Emulator結合テスト130件成功。HTTP400の原因は未確定で、次回の手動登録時の詳細応答を確認待ち。
+
+## P3-005 摘要の不正文字対策（2026-09-15・ユーザー確認待ち）
+- ユーザーの応答画像で「Lines > Descriptionに不正な文字が含まれています」を確認。システムが品番と出力文の間へ挿入していた改行を有力原因として対応。実APIでの解消確認は未実施。
+- freee用摘要は品番と出力文をスペースで結合し、CRLF・CR・LF・タブ・Unicode行区切りをスペースへ変換。その他の制御文字は保存前に拒否する。原文・翻訳文・確定出力文は変更しない。
+- プレビュー・255文字のカウント・保存ペイロードで同じ整形を利用。旧版は書き換えず、新版の再保存を画面で案内。旧改行入りペイロードは送信前にサーバーでも拒否する。送信済み・結果不明の再作成防止を維持。
+- 自動確認: typecheck・lint・build成功、単体110件・Firestore結合131件成功。Java未検出はプロジェクト内の既存Java指定で解消。
+- 動作確認: 画面を再読込し「販売見積を保存」で新版を作成、摘要がスペース区切りであることを確認して明示登録。API成功後の実帳票確認までは完了にしない。
+
+- 本番反映: 未実施。Firebase CLIが credentials are no longer valid を返し、デプロイ失敗。firebase login --reauth 後に saveSalesQuotePricing・sendFreeeQuotation・Hosting を再デプロイする。freeeの再認可は不要。
+
+- 2026-09-15 再認証後: saveSalesQuotePricing・sendFreeeQuotation・Hostingの本番反映成功。新版保存・手動登録・実帳票のユーザー確認待ち。
+
+- 2026-09-15: 保存ボタンが表示されない事象を修正。Firestore初回読込時に既存保存版を編集状態へ反映し、旧版の摘要修正用に新版を保存できるようにした。typecheck・lint・build成功。Hosting本番反映成功。ユーザー確認待ち。
+
+## P3-005 完了（2026-09-15・ユーザー確認OK）
+- ユーザーが、摘要をスペース区切りにした新版の「販売見積を保存」が表示され、保存できることを本番で確認。
+- 回帰確認: typecheck・lint・production build成功、フロントエンド単体110件・Firestore Emulator結合/権限131件成功。
+- saveSalesQuotePricing・sendFreeeQuotation・Hostingの本番反映済み。freeeへの実登録・帳票確認はユーザーの明示実施時のみ行う。

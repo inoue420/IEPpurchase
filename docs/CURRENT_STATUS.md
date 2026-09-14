@@ -98,3 +98,10 @@ firestore.rulesをieppurchaseへデプロイ済み。Firestore Emulator Rulesテ
 - 新しいfreeeプライベートアプリでOAuth連携に成功し、対象事業所の接続情報をSecret Managerへ保存できることをユーザー確認済み。
 - 旧freeeアプリを削除し、旧Secret版を削除済み。現行版は `FREEE_CLIENT_ID@5`、`FREEE_CLIENT_SECRET@4`、`FREEE_OAUTH_TOKENS@2`。
 - 自動確認: typecheck、lint、production build、単体テスト82件、Functions build、Functionsテスト5件成功。
+
+## IEP-P3-003 翻訳済み品目の販売見積明細への取り込み・確認（2026-09-14・ユーザー確認待ち）
+- RFQ詳細に販売見積明細（翻訳確認）を追加。アクティブなRFQ品目の`rfqId`、`rfqItemId`、品番、数量、単位、原文、英訳、見積用出力文を`salesQuotes/{rfqId}/items/{rfqItemId}`へ取り込む。
+- 英訳未入力は明示表示し、見積用出力文を利用者が補完・修正できる。品番・数量・単位は翻訳・変更しない。
+- 一括確定後は原文・訳文・出力文をスナップショットとして保持し、RFQ品目の後日の変更では上書きされない。Firestore Rulesでも確定後のヘッダー・明細更新を拒否する。
+- 自動確認: typecheck、lint、production build、単体テスト82件、Firestore Rulesテスト成功。
+- Google Drive管理シートのIEP-P3-003を「ユーザー確認待ち」・Codex確認OKへ更新済み。

@@ -173,6 +173,47 @@ service cloud.firestore {
             && (request.resource.data.archivedAt == null || request.resource.data.archivedAt == request.time)));
       allow delete: if false;
     }
+    match /salesQuotes/{rfqId} {
+      function validSalesQuote(d) {
+        return d.keys().hasAll(['rfqId', 'status', 'confirmedAt', 'createdAt', 'updatedAt'])
+          && d.keys().hasOnly(['rfqId', 'status', 'confirmedAt', 'createdAt', 'updatedAt'])
+          && d.rfqId == rfqId && exists(/databases/$(database)/documents/rfqs/$(rfqId))
+          && d.status in ['draft', 'confirmed'] && d.createdAt is timestamp && d.updatedAt == request.time
+          && ((d.status == 'draft' && d.confirmedAt == null) || (d.status == 'confirmed' && d.confirmedAt == request.time));
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && validSalesQuote(request.resource.data)
+        && request.resource.data.status == 'draft' && request.resource.data.createdAt == request.time;
+      allow update: if isSignedIn() && validSalesQuote(request.resource.data)
+        && resource.data.status == 'draft' && request.resource.data.status == 'confirmed'
+        && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if false;
+
+      match /items/{itemId} {
+        function validSalesQuoteItem(d) {
+          let source = get(/databases/$(database)/documents/rfqs/$(rfqId)/items/$(itemId)).data;
+          return d.keys().hasAll(['rfqId', 'rfqItemId', 'lineNo', 'partNumber', 'quantity', 'unit', 'originalDescription', 'translatedDescription', 'outputDescription', 'confirmedAt', 'createdAt', 'updatedAt'])
+            && d.keys().hasOnly(['rfqId', 'rfqItemId', 'lineNo', 'partNumber', 'quantity', 'unit', 'originalDescription', 'translatedDescription', 'outputDescription', 'confirmedAt', 'createdAt', 'updatedAt'])
+            && d.rfqId == rfqId && d.rfqItemId == itemId && exists(/databases/$(database)/documents/rfqs/$(rfqId)/items/$(itemId))
+            && source.archivedAt == null && source.status != 'cancelled'
+            && d.lineNo == source.lineNo && d.partNumber == source.partNumber && d.quantity == source.quantity && d.unit == source.unit
+            && d.originalDescription == source.originalDescription && d.translatedDescription == source.translatedDescription
+            && d.outputDescription is string && d.outputDescription.size() <= 5000
+            && d.createdAt is timestamp && d.updatedAt == request.time && (d.confirmedAt == null || d.confirmedAt == request.time);
+        }
+        allow get, list: if isSignedIn();
+        allow create: if isSignedIn() && validSalesQuoteItem(request.resource.data)
+          && request.resource.data.createdAt == request.time && request.resource.data.confirmedAt == null
+          && getAfter(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft';
+        allow update: if isSignedIn() && validSalesQuoteItem(request.resource.data)
+          && request.resource.data.createdAt == resource.data.createdAt
+          && get(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft'
+          && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['outputDescription', 'updatedAt']) && request.resource.data.confirmedAt == null)
+            || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['confirmedAt', 'updatedAt']) && request.resource.data.confirmedAt == request.time
+              && getAfter(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'confirmed'));
+        allow delete: if false;
+      }
+    }
     match /supplierQuoteRequests/{requestId} {
       function validSupplierQuoteRequest(d) {
         return d.keys().hasAll(['rfqId', 'supplierId', 'supplierName', 'rfqItemIds', 'requestedAt', 'responseDueDate', 'status', 'note', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])

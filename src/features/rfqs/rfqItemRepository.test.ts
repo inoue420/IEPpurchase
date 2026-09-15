@@ -8,10 +8,20 @@ vi.mock('firebase/firestore', async importOriginal => ({
   runTransaction: (_db: unknown, work: (tx: typeof mock) => Promise<void>) => work(mock),
   serverTimestamp: () => 'server-time',
 }))
-import { createRfqItem, setRfqItemArchived, updateRfqItem } from './rfqItemRepository'
+import { createRfqItem, saveRfqItemTranslation, setRfqItemArchived, updateRfqItem } from './rfqItemRepository'
 const input = { originalDescription: ' Bolt ', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 2, unit: '個', requestedDeliveryDate: '2026-09-08', status: 'pending' as const, note: '' }
 describe('RFQ品目保存', () => {
   beforeEach(() => vi.clearAllMocks())
+  it('翻訳は指定品目の訳文のみ更新する', async () => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ originalDescription: '原文', translatedDescription: '旧訳', archivedAt: null }) })
+    await saveRfqItemTranslation('rfq-a', 'item-a', '原文', 'New translation', '旧訳')
+    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { translatedDescription: 'New translation', updatedAt: 'server-time' })
+  })
+  it.each([{ originalDescription: '変更' }, { translatedDescription: '変更' }, { archivedAt: 'deleted' }, { status: 'cancelled' }])('実行中に変更・削除・取消された品目を上書きしない: %j', async change => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ originalDescription: '原文', translatedDescription: '旧訳', archivedAt: null, ...change }) })
+    await expect(saveRfqItemTranslation('rfq-a', 'item-a', '原文', 'New', '旧訳')).rejects.toThrow()
+    expect(mock.update).not.toHaveBeenCalled()
+  })
   it('親案件とカウンターを読み、同一トランザクションで次の明細を保存する', async () => {
     mock.get.mockResolvedValueOnce({ exists: () => true }).mockResolvedValueOnce({ exists: () => true, data: () => ({ lastLineNo: 2 }) })
     await createRfqItem('rfq-a', input)

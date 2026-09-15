@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, Paper, Snackbar, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from '@mui/material'
 import { RfqItemDialog } from './RfqItemDialog'
+import { BulkTranslationDialog } from './BulkTranslationDialog'
 import { setRfqItemArchived, subscribeRfqItemProducts, subscribeRfqItems, type RfqItem, type RfqItemProduct } from './rfqItemRepository'
 import { rfqItemStatusLabels } from './rfqItemSchema'
 import { rfqError } from './rfqError'
@@ -52,5 +53,18 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
     {editing !== undefined && <RfqItemDialog key={editing?.id ?? 'new'} rfqId={rfqId} item={editing} products={products} onClose={() => setEditing(undefined)} onSaved={message => { setEditing(undefined); setNotice(message) }} />}
     <Dialog open={Boolean(confirming)} onClose={busy ? undefined : () => setConfirming(null)}><DialogTitle>品目を{confirming?.archivedAt ? '復元' : '削除'}</DialogTitle><DialogContent>{actionError && <Alert severity="error">{actionError}</Alert>}<DialogContentText>明細No. {confirming?.lineNo} を{confirming?.archivedAt ? '復元します。' : '削除します。登録情報は保持され、後から復元できます。'}</DialogContentText></DialogContent><DialogActions><Button disabled={busy} onClick={() => setConfirming(null)}>キャンセル</Button><Button disabled={busy} onClick={() => void archive()}>{busy ? '処理中…' : confirming?.archivedAt ? '復元' : '削除'}</Button></DialogActions></Dialog>
     <Snackbar open={Boolean(notice)} message={notice} autoHideDuration={4000} onClose={() => setNotice(null)} />
+  </Box>
+}
+
+export function BulkTranslationSection({ rfqId }: { rfqId: string }) {
+  const [items, setItems] = useState<RfqItem[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
+  const [open, setOpen] = useState(false)
+  useEffect(() => subscribeRfqItems(rfqId, next => { setItems(next); setLoading(false); setLoadError(false) }, () => { setLoading(false); setLoadError(true) }), [rfqId])
+  return <Box sx={{ mt: 3 }}>
+    <Button variant="outlined" disabled={loading || loadError || items.length === 0} onClick={() => setOpen(true)}>選択して一括翻訳</Button>
+    {loadError && <Alert severity="warning" sx={{ mt: 1 }}>品目を読み込めないため、一括翻訳を開始できません。</Alert>}
+    {open && <BulkTranslationDialog rfqId={rfqId} items={items} onClose={() => setOpen(false)} />}
   </Box>
 }

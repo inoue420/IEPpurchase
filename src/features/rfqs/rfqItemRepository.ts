@@ -46,6 +46,19 @@ export async function updateRfqItem(rfqId: string, itemId: string, input: RfqIte
     transaction.update(itemRef, { ...payload, updatedAt: serverTimestamp() })
   })
 }
+export async function saveRfqItemTranslation(rfqId: string, itemId: string, originalDescription: string, translatedDescription: string, previousTranslation: string): Promise<void> {
+  const source = originalDescription.trim()
+  const translated = translatedDescription.trim()
+  if (!source || source.length > 5000 || !translated || translated.length > 5000) throw new Error('翻訳する原文または訳文が不正です。')
+  const itemRef = doc(firestore, 'rfqs', rfqId, 'items', itemId)
+  await runTransaction(firestore, async transaction => {
+    const current = await transaction.get(itemRef)
+    if (!current.exists() || current.data().archivedAt != null) throw new Error('品目が削除されています。再読込してください。')
+    if (current.data().status === 'cancelled') throw new Error('品目が取消済みです。')
+    if (asText(current.data().originalDescription) !== originalDescription || asText(current.data().translatedDescription) !== previousTranslation) throw new Error('原文または訳文が変更されています。再読込してから翻訳し直してください。')
+    transaction.update(itemRef, { translatedDescription: translated, updatedAt: serverTimestamp() })
+  })
+}
 export async function setRfqItemArchived(rfqId: string, itemId: string, archived: boolean): Promise<void> {
   const itemRef = doc(firestore, 'rfqs', rfqId, 'items', itemId)
   await runTransaction(firestore, async transaction => {

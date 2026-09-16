@@ -8,8 +8,8 @@ vi.mock('firebase/firestore', async importOriginal => ({
   runTransaction: (_db: unknown, work: (tx: typeof mock) => Promise<void>) => work(mock),
   serverTimestamp: () => 'server-time',
 }))
-import { createRfqItem, saveRfqItemTranslation, setRfqItemArchived, updateRfqItem } from './rfqItemRepository'
-const input = { originalDescription: ' Bolt ', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 2, unit: '個', requestedDeliveryDate: '2026-09-08', status: 'pending' as const, note: '' }
+import { appendRfqItemEcPurchaseCandidates, createRfqItem, saveRfqItemTranslation, setRfqItemArchived, setRfqItemSourcingTargets, updateRfqItem } from './rfqItemRepository'
+const input = { originalDescription: ' Bolt ', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 2, unit: '個', supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: '2026-09-08', status: 'pending' as const, note: '' }
 describe('RFQ品目保存', () => {
   beforeEach(() => vi.clearAllMocks())
   it('翻訳は指定品目の訳文のみ更新する', async () => {
@@ -62,5 +62,17 @@ describe('RFQ品目保存', () => {
     expect(mock.update).toHaveBeenLastCalledWith('rfqs/rfq-a/items/item-a', { archivedAt: 'server-time', updatedAt: 'server-time' })
     await setRfqItemArchived('rfq-a', 'item-a', false)
     expect(mock.update).toHaveBeenLastCalledWith('rfqs/rfq-a/items/item-a', { archivedAt: null, updatedAt: 'server-time' })
+  })
+  it('一括検索の候補は既存候補を残して空き枠だけに追加する', async () => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status: 'pending', ecPurchaseCandidates: [{ storeProductName: '既存', url: 'https://example.test/existing', price: 100 }] }) })
+    const added = await appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', [{ storeProductName: '新規', url: 'https://example.test/new', price: 200 }, { storeProductName: '重複', url: 'https://example.test/existing', price: 100 }])
+    expect(added).toBe(1)
+    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { ecPurchaseCandidates: [{ storeProductName: '既存', url: 'https://example.test/existing', price: 100 }, { storeProductName: '新規', url: 'https://example.test/new', price: 200 }], updatedAt: 'server-time' })
+  })
+  it('一覧から対応先だけを安全に切り替える', async () => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null }) })
+    await setRfqItemSourcingTargets('rfq-a', 'item-a', true, false)
+    expect(mock.update).toHaveBeenLastCalledWith('rfqs/rfq-a/items/item-a', { supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: false, updatedAt: 'server-time' })
+    await expect(setRfqItemSourcingTargets('rfq-a', 'item-a', false, false)).rejects.toThrow('対応先を1つ以上選択してください。')
   })
 })

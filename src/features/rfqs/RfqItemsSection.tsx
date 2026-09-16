@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { Alert, Box, Button, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, Paper, Snackbar, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from '@mui/material'
+import { Alert, Box, Button, Checkbox, Chip, CircularProgress, Dialog, DialogActions, DialogContent, DialogContentText, DialogTitle, FormControlLabel, Paper, Snackbar, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from '@mui/material'
 import { RfqItemDialog } from './RfqItemDialog'
 import { BulkTranslationDialog } from './BulkTranslationDialog'
-import { setRfqItemArchived, subscribeRfqItemProducts, subscribeRfqItems, type RfqItem, type RfqItemProduct } from './rfqItemRepository'
+import { appendRfqItemEcPurchaseCandidates, setRfqItemArchived, setRfqItemSourcingTargets, subscribeRfqItemProducts, subscribeRfqItems, type RfqItem, type RfqItemProduct } from './rfqItemRepository'
 import { rfqItemStatusLabels } from './rfqItemSchema'
 import { rfqError } from './rfqError'
 import { includesSearchText, normalizeSearchText } from '../../utils/searchText'
+import { searchRakutenItems } from '../marketplaceOffers/rakutenSearch'
+import { selectPartNumberMatchedRakutenItems } from './rakutenCandidateSelection'
 
 export function RfqItemsSection({ rfqId }: { rfqId: string }) {
   const [items, setItems] = useState<RfqItem[]>([])
@@ -21,7 +23,10 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [updatingTargetId, setUpdatingTargetId] = useState<string | null>(null)
+  const [bulkProgress, setBulkProgress] = useState<string | null>(null)
   const submitting = useRef(false)
+  const bulkSearching = useRef(false)
   useEffect(() => subscribeRfqItems(rfqId, next => { setItems(next); setLoading(false); setLoadError(null) }, cause => { setLoadError(rfqError(cause)); setLoading(false) }), [rfqId, retry])
   useEffect(() => subscribeRfqItemProducts(next => { setProducts(next); setProductError(null) }, cause => setProductError(rfqError(cause))), [retry])
   const keyword = normalizeSearchText(search)
@@ -36,16 +41,49 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
     } catch (cause: unknown) { setActionError(rfqError(cause)) }
     finally { submitting.current = false; setBusy(false) }
   }
+  async function updateSourcingTargets(item: RfqItem, supplierQuoteRequestEnabled: boolean, marketplaceOfferEnabled: boolean) {
+    if ((!supplierQuoteRequestEnabled && !marketplaceOfferEnabled) || updatingTargetId) return
+    setUpdatingTargetId(item.id); setActionError(null)
+    try {
+      await setRfqItemSourcingTargets(rfqId, item.id, supplierQuoteRequestEnabled, marketplaceOfferEnabled)
+      setNotice('明細No. ' + item.lineNo + ' の対応先を更新しました。')
+    } catch (cause: unknown) { setActionError(rfqError(cause)) }
+    finally { setUpdatingTargetId(null) }
+  }
+  async function bulkRakutenSearch() {
+    const targets = visible.filter(item => !item.archivedAt && item.status !== 'cancelled' && item.marketplaceOfferEnabled)
+    if (bulkSearching.current || targets.length === 0) return
+    bulkSearching.current = true; setBusy(true); setActionError(null); setNotice(null)
+    let addedItems = 0; let addedCandidates = 0; let skipped = 0; let failed = 0
+    try {
+      for (const [index, item] of targets.entries()) {
+        setBulkProgress(`${index + 1}/${targets.length}: 明細No. ${item.lineNo} を楽天検索中…`)
+        if (!item.manufacturerName.trim() || !item.partNumber.trim() || item.ecPurchaseCandidates.length >= 5) { skipped += 1; continue }
+        try {
+          const result = await searchRakutenItems(`${item.manufacturerName.trim()} ${item.partNumber.trim()}`)
+          const matched = selectPartNumberMatchedRakutenItems(result.items, item.partNumber, 5 - item.ecPurchaseCandidates.length)
+          if (matched.length === 0) { skipped += 1; continue }
+          const added = await appendRfqItemEcPurchaseCandidates(rfqId, item.id, matched.map(value => ({ storeProductName: value.itemName, url: value.itemUrl, price: value.itemPrice })))
+          if (added > 0) { addedItems += 1; addedCandidates += added } else skipped += 1
+        } catch { failed += 1 }
+      }
+      setNotice(`楽天一括検索完了: ${targets.length}品目中、${addedItems}品目へ${addedCandidates}件を追加${skipped ? `、${skipped}品目は一致候補なし・入力不足・空き枠なし` : ''}${failed ? `、${failed}品目は検索または保存に失敗` : ''}。`)
+    } finally {
+      bulkSearching.current = false; setBusy(false); setBulkProgress(null)
+    }
+  }
   const retryLoad = () => { setLoading(true); setRetry(value => value + 1) }
   return <Box sx={{ mt: 3 }}>
     <Stack direction="row" justifyContent="space-between" sx={{ mb: 2 }}><Typography component="h2" variant="h5">品目</Typography><Button variant="contained" disabled={loading || Boolean(loadError)} onClick={() => setEditing(null)}>品目を追加</Button></Stack>
     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}><TextField label="品目を検索" fullWidth value={search} onChange={event => setSearch(event.target.value)} /><Button onClick={() => setShowArchived(value => !value)} variant={showArchived ? 'contained' : 'outlined'}>{showArchived ? '削除済みを表示中' : '削除済みを表示'}</Button></Stack>
+    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}><Button variant="outlined" disabled={loading || Boolean(loadError) || busy || !visible.some(item => !item.archivedAt && item.status !== 'cancelled' && item.marketplaceOfferEnabled)} onClick={() => void bulkRakutenSearch()}>{bulkProgress ?? '表示中のEC対象を楽天で検索'}</Button><Typography variant="body2" color="text.secondary">EC検索が選択された表示中の品目を順番に検索し、品番一致候補を保存します。</Typography></Stack>
     {productError && <Alert severity="warning" action={<Button onClick={retryLoad}>再試行</Button>}>商品マスターを読み込めません。品目は手入力できます。</Alert>}
+    {actionError && !confirming && <Alert severity="error" sx={{ mb: 2 }} onClose={() => setActionError(null)}>{actionError}</Alert>}
     {loadError ? <Alert severity="error" action={<Button onClick={retryLoad}>再試行</Button>}>{loadError}</Alert> : loading ? <CircularProgress /> : <TableContainer component={Paper}><Table sx={{ minWidth: 800 }}>
-      <TableHead><TableRow>{['No.', '品目説明 / 翻訳', 'メーカー / 品番 / 商品名', '数量', '希望納期', '状態', '操作'].map(label => <TableCell key={label}>{label}</TableCell>)}</TableRow></TableHead>
-      <TableBody>{visible.length === 0 ? <TableRow><TableCell colSpan={7} align="center">該当する品目はありません。</TableCell></TableRow> : visible.map(item => <TableRow key={item.id}>
+      <TableHead><TableRow>{['No.', '品目説明 / 翻訳', 'メーカー / 品番 / 商品名', '数量', '対応先', '希望納期', '状態', '操作'].map(label => <TableCell key={label}>{label}</TableCell>)}</TableRow></TableHead>
+      <TableBody>{visible.length === 0 ? <TableRow><TableCell colSpan={8} align="center">該当する品目はありません。</TableCell></TableRow> : visible.map(item => <TableRow key={item.id}>
         <TableCell>{item.lineNo}</TableCell><TableCell sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{item.originalDescription}{item.translatedDescription && <Typography color="text.secondary">{item.translatedDescription}</Typography>}</TableCell>
-        <TableCell>{[item.manufacturerName, item.partNumber, item.productName].filter(Boolean).join(' / ') || '—'}</TableCell><TableCell>{item.quantity} {item.unit}</TableCell><TableCell>{item.requestedDeliveryDate?.toDate().toLocaleDateString('ja-JP') ?? '—'}</TableCell>
+        <TableCell>{[item.manufacturerName, item.partNumber, item.productName].filter(Boolean).join(' / ') || '—'}</TableCell><TableCell>{item.quantity} {item.unit}</TableCell><TableCell><Stack spacing={0}><FormControlLabel sx={{ m: 0 }} control={<Checkbox size="small" checked={item.supplierQuoteRequestEnabled} disabled={busy || Boolean(item.archivedAt) || updatingTargetId === item.id || !item.marketplaceOfferEnabled} onChange={event => void updateSourcingTargets(item, event.target.checked, item.marketplaceOfferEnabled)} />} label="仕入先見積" /><FormControlLabel sx={{ m: 0 }} control={<Checkbox size="small" checked={item.marketplaceOfferEnabled} disabled={busy || Boolean(item.archivedAt) || updatingTargetId === item.id || !item.supplierQuoteRequestEnabled} onChange={event => void updateSourcingTargets(item, item.supplierQuoteRequestEnabled, event.target.checked)} />} label="EC検索" /></Stack></TableCell><TableCell>{item.requestedDeliveryDate?.toDate().toLocaleDateString('ja-JP') ?? '—'}</TableCell>
         <TableCell><Chip size="small" label={item.archivedAt ? '削除済み' : rfqItemStatusLabels[item.status] ?? item.status} /></TableCell>
         <TableCell><Button disabled={busy || Boolean(item.archivedAt)} onClick={() => setEditing(item)}>編集</Button><Button disabled={busy} color={item.archivedAt ? 'success' : 'warning'} onClick={() => { setActionError(null); setConfirming(item) }}>{item.archivedAt ? '復元' : '削除'}</Button></TableCell>
       </TableRow>)}</TableBody>

@@ -38,7 +38,8 @@ const rfq = () => ({
 const item = () => ({
   lineNo: 1, originalDescription: '依頼品目', translatedDescription: '',
   productId: '', manufacturerId: '', manufacturerName: '', partNumber: '',
-  productName: '', quantity: 1, unit: '個', requestedDeliveryDate: null,
+  productName: '', quantity: 1, unit: '個',
+  supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: null,
   status: 'pending', note: '', archivedAt: null,
   createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
 })
@@ -282,6 +283,7 @@ describe('RFQ items', () => {
   it.each([
     { lineNo: 9 }, { quantity: 0 }, { quantity: -1 }, { quantity: Number.POSITIVE_INFINITY },
     { unit: '' }, { originalDescription: '' }, { status: 'invalid' }, { extra: true },
+    { supplierQuoteRequestEnabled: false, marketplaceOfferEnabled: false },
     { createdAt: serverTimestamp() }, { archivedAt: past },
   ])('rejects malformed or immutable item changes', async change => {
     await assertFails(updateDoc(doc(dbFor('member'), 'rfqs/existing/items/existing'), {

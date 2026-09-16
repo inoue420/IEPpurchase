@@ -125,9 +125,25 @@ service cloud.firestore {
       allow list, delete: if false;
     }
     match /rfqs/{rfqId}/items/{itemId} {
+      function validEcPurchaseCandidate(candidate) {
+        return candidate is map
+          && candidate.keys().hasAll(['storeProductName', 'url', 'price'])
+          && candidate.keys().hasOnly(['storeProductName', 'url', 'price'])
+          && candidate.storeProductName is string && candidate.storeProductName.size() > 0 && candidate.storeProductName.size() <= 500
+          && candidate.url is string && candidate.url.size() > 0 && candidate.url.size() <= 2000 && candidate.url.matches('https?://.+')
+          && candidate.price is int && candidate.price >= 0 && candidate.price <= 1000000000;
+      }
+      function validEcPurchaseCandidates(candidates) {
+        return candidates is list && candidates.size() <= 5
+          && (candidates.size() == 0 || validEcPurchaseCandidate(candidates[0]))
+          && (candidates.size() < 2 || validEcPurchaseCandidate(candidates[1]))
+          && (candidates.size() < 3 || validEcPurchaseCandidate(candidates[2]))
+          && (candidates.size() < 4 || validEcPurchaseCandidate(candidates[3]))
+          && (candidates.size() < 5 || validEcPurchaseCandidate(candidates[4]));
+      }
       function validItem(d) {
         return d.keys().hasAll(['lineNo', 'originalDescription', 'translatedDescription', 'productId', 'manufacturerId', 'manufacturerName', 'partNumber', 'productName', 'quantity', 'unit', 'requestedDeliveryDate', 'status', 'note', 'createdAt', 'updatedAt', 'archivedAt'])
-          && d.keys().hasOnly(['lineNo', 'originalDescription', 'translatedDescription', 'productId', 'manufacturerId', 'manufacturerName', 'partNumber', 'productName', 'quantity', 'unit', 'requestedDeliveryDate', 'status', 'note', 'createdAt', 'updatedAt', 'archivedAt'])
+          && d.keys().hasOnly(['lineNo', 'originalDescription', 'translatedDescription', 'productId', 'manufacturerId', 'manufacturerName', 'partNumber', 'productName', 'quantity', 'unit', 'supplierQuoteRequestEnabled', 'marketplaceOfferEnabled', 'ecPurchaseCandidates', 'requestedDeliveryDate', 'status', 'note', 'createdAt', 'updatedAt', 'archivedAt'])
           && d.lineNo is int && d.lineNo > 0
           && d.originalDescription is string && d.originalDescription.size() > 0 && d.originalDescription.size() <= 5000
           && d.translatedDescription is string && d.translatedDescription.size() <= 5000
@@ -138,6 +154,10 @@ service cloud.firestore {
           && d.productName is string && d.productName.size() <= 500
           && d.quantity is number && d.quantity > 0 && d.quantity <= 1000000000
           && d.unit is string && d.unit.size() > 0 && d.unit.size() <= 50
+          && (!d.keys().hasAny(['supplierQuoteRequestEnabled']) || d.supplierQuoteRequestEnabled is bool)
+          && (!d.keys().hasAny(['marketplaceOfferEnabled']) || d.marketplaceOfferEnabled is bool)
+          && (!d.keys().hasAll(['supplierQuoteRequestEnabled', 'marketplaceOfferEnabled']) || d.supplierQuoteRequestEnabled || d.marketplaceOfferEnabled)
+          && (!d.keys().hasAny(['ecPurchaseCandidates']) || validEcPurchaseCandidates(d.ecPurchaseCandidates))
           && (d.requestedDeliveryDate == null || d.requestedDeliveryDate is timestamp)
           && d.status in ['pending', 'sourcing', 'quoted', 'ordered', 'received', 'cancelled']
           && d.note is string && d.note.size() <= 5000
@@ -162,6 +182,7 @@ service cloud.firestore {
       allow get, list: if isSignedIn();
       allow create: if isSignedIn() && exists(/databases/$(database)/documents/rfqs/$(rfqId))
         && validItem(request.resource.data) && validNewLine()
+        && request.resource.data.keys().hasAll(['supplierQuoteRequestEnabled', 'marketplaceOfferEnabled', 'ecPurchaseCandidates'])
         && request.resource.data.createdAt == request.time && request.resource.data.archivedAt == null;
       allow update: if isSignedIn() && exists(/databases/$(database)/documents/rfqs/$(rfqId))
         && validItem(request.resource.data)
@@ -458,6 +479,7 @@ service cloud.firestore {
           && d.rfqItemId is string && d.rfqItemId.size() > 0 && d.rfqItemId.size() <= 128
           && exists(/databases/$(database)/documents/rfqs/$(d.rfqId)) && exists(itemPath)
           && item.archivedAt == null && item.status != 'cancelled'
+          && (!item.keys().hasAny(['marketplaceOfferEnabled']) || item.marketplaceOfferEnabled == true)
           && d.productId == (item.productId == '' ? null : item.productId) && d.unit == item.unit
           && d.source in ['amazon', 'rakuten', 'other']
           && d.externalItemId is string && d.externalItemId.size() <= 200

@@ -18,8 +18,8 @@ export function subscribeSupplierQuoteRequests(rfqId: string, change: (requests:
 function currentUserId() { const uid = firebaseAuth.currentUser?.uid; if (!uid) throw new Error('ログイン状態を確認できません。'); return uid }
 async function validateRfqItems(rfqId: string, rfqItemIds: string[]) {
   const items = await Promise.all(rfqItemIds.map(id => getDoc(doc(firestore, 'rfqs', rfqId, 'items', id))))
-  if (items.some(item => !item.exists() || item.data().archivedAt != null)) {
-    throw new Error('対象品目が見つからないか、無効になっています。再読込してください。')
+  if (items.some(item => !item.exists() || item.data().archivedAt != null || item.data().status === 'cancelled' || item.data().supplierQuoteRequestEnabled === false)) {
+    throw new Error('仕入先見積依頼の対象外または無効な品目が含まれています。再読込してください。')
   }
 }
 export async function createSupplierQuoteRequest(rfqId: string, input: SupplierQuoteRequestInput) { const uid = currentUserId(); const value = payload(input); await validateRfqItems(rfqId, value.rfqItemIds); await addDoc(collection(firestore, 'supplierQuoteRequests'), { ...value, rfqId, createdAt: serverTimestamp(), createdBy: uid, updatedAt: serverTimestamp(), updatedBy: uid }) }

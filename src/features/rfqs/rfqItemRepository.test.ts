@@ -64,10 +64,10 @@ describe('RFQ品目保存', () => {
     expect(mock.update).toHaveBeenLastCalledWith('rfqs/rfq-a/items/item-a', { archivedAt: null, updatedAt: 'server-time' })
   })
   it('一括検索の候補は既存候補を残して空き枠だけに追加する', async () => {
-    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status: 'pending', ecPurchaseCandidates: [{ storeProductName: '既存', url: 'https://example.test/existing', price: 100 }] }) })
-    const added = await appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', [{ storeProductName: '新規', url: 'https://example.test/new', price: 200 }, { storeProductName: '重複', url: 'https://example.test/existing', price: 100 }])
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status: 'pending', ecPurchaseCandidates: [{ storeProductName: '既存', url: 'https://example.test/existing', price: 100, purchasePlanned: true }] }) })
+    const added = await appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', [{ storeProductName: '新規', url: 'https://example.test/new', price: 200, purchasePlanned: false }, { storeProductName: '重複', url: 'https://example.test/existing', price: 100, purchasePlanned: false }])
     expect(added).toBe(1)
-    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { ecPurchaseCandidates: [{ storeProductName: '既存', url: 'https://example.test/existing', price: 100 }, { storeProductName: '新規', url: 'https://example.test/new', price: 200 }], updatedAt: 'server-time' })
+    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { ecPurchaseCandidates: [{ storeProductName: '既存', url: 'https://example.test/existing', price: 100, purchasePlanned: true }, { storeProductName: '新規', url: 'https://example.test/new', price: 200, purchasePlanned: false }], updatedAt: 'server-time' })
   })
   it('一覧から対応先だけを安全に切り替える', async () => {
     mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null }) })

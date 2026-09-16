@@ -128,7 +128,8 @@ service cloud.firestore {
       function validEcPurchaseCandidate(candidate) {
         return candidate is map
           && candidate.keys().hasAll(['storeProductName', 'url', 'price'])
-          && candidate.keys().hasOnly(['storeProductName', 'url', 'price'])
+          && candidate.keys().hasOnly(['storeProductName', 'url', 'price', 'purchasePlanned'])
+          && (!candidate.keys().hasAny(['purchasePlanned']) || candidate.purchasePlanned is bool)
           && candidate.storeProductName is string && candidate.storeProductName.size() > 0 && candidate.storeProductName.size() <= 500
           && candidate.url is string && candidate.url.size() > 0 && candidate.url.size() <= 2000 && candidate.url.matches('https?://.+')
           && candidate.price is int && candidate.price >= 0 && candidate.price <= 1000000000;
@@ -176,7 +177,6 @@ service cloud.firestore {
         return !exists(statePath) || get(statePath).data.selectedQuantityMillis == 0
           || (request.resource.data.quantity == resource.data.quantity
             && request.resource.data.unit == resource.data.unit
-            && request.resource.data.status == resource.data.status
             && request.resource.data.archivedAt == resource.data.archivedAt);
       }
       allow get, list: if isSignedIn();

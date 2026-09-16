@@ -63,7 +63,7 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
           const result = await searchRakutenItems(`${item.manufacturerName.trim()} ${item.partNumber.trim()}`)
           const matched = selectPartNumberMatchedRakutenItems(result.items, item.partNumber, 5 - item.ecPurchaseCandidates.length)
           if (matched.length === 0) { skipped += 1; continue }
-          const added = await appendRfqItemEcPurchaseCandidates(rfqId, item.id, matched.map(value => ({ storeProductName: value.itemName, url: value.itemUrl, price: value.itemPrice })))
+          const added = await appendRfqItemEcPurchaseCandidates(rfqId, item.id, matched.map(value => ({ storeProductName: value.itemName, url: value.itemUrl, price: value.itemPrice, purchasePlanned: false })))
           if (added > 0) { addedItems += 1; addedCandidates += added } else skipped += 1
         } catch { failed += 1 }
       }

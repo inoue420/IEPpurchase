@@ -2,7 +2,7 @@ import { Timestamp, collection, doc, onSnapshot, orderBy, query, runTransaction,
 import { firestore } from '../../firebase/firebase'
 import { ecPurchaseCandidateSchema, rfqItemSchema, type RfqItemStatus } from './rfqItemSchema'
 
-export interface EcPurchaseCandidate { storeProductName: string; url: string; price: number }
+export interface EcPurchaseCandidate { storeProductName: string; url: string; price: number; purchasePlanned: boolean }
 export interface RfqItemInput { originalDescription: string; translatedDescription: string; productId: string; manufacturerId: string; manufacturerName: string; partNumber: string; productName: string; quantity: number; unit: string; supplierQuoteRequestEnabled: boolean; marketplaceOfferEnabled: boolean; ecPurchaseCandidates: EcPurchaseCandidate[]; requestedDeliveryDate: string; status: RfqItemStatus; note: string }
 export interface RfqItemDocument extends Omit<RfqItemInput, 'requestedDeliveryDate'> { lineNo: number; requestedDeliveryDate: Timestamp | null; createdAt: Timestamp | null; updatedAt: Timestamp | null; archivedAt: Timestamp | null }
 export interface RfqItem extends RfqItemDocument { id: string }
@@ -16,7 +16,7 @@ function readEcPurchaseCandidates(value: unknown): EcPurchaseCandidate[] {
     if (candidate === null || typeof candidate !== 'object') return []
     const data = candidate as Record<string, unknown>
     const price = asNumber(data.price)
-    return typeof data.storeProductName === 'string' && typeof data.url === 'string' && Number.isInteger(price) ? [{ storeProductName: data.storeProductName, url: data.url, price }] : []
+    return typeof data.storeProductName === 'string' && typeof data.url === 'string' && Number.isInteger(price) ? [{ storeProductName: data.storeProductName, url: data.url, price, purchasePlanned: data.purchasePlanned === true }] : []
   })
 }
 function readItem(id: string, data: Record<string, unknown>): RfqItem {

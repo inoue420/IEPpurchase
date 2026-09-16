@@ -11,6 +11,7 @@ export const ecPurchaseCandidateSchema = z.object({
   storeProductName: z.string().trim().min(1, 'ストア掲載商品名を入力してください。').max(500, 'ストア掲載商品名は500文字以内で入力してください。'),
   url: z.string().trim().url('URLを正しく入力してください。').max(2000, 'URLは2000文字以内で入力してください。'),
   price: z.coerce.number().int('価格は整数で入力してください。').min(0, '価格は0円以上で入力してください。').max(1_000_000_000, '価格が大きすぎます。'),
+  purchasePlanned: z.boolean().default(false),
 })
 
 export const rfqItemSchema = z.object({

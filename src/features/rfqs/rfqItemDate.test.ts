@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { localDateInput, rfqItemSchema } from './rfqItemSchema'
-const input = { originalDescription: 'Bolt', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 1, unit: '個', supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: '', status: 'pending', note: '' }
+const input = { originalDescription: 'Bolt', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 1, supplierResponseUnitPrice: null, unit: '個', supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: '', status: 'pending', note: '' }
 describe('品目の日付と数値の境界', () => {
   it('ローカル日付をUTC変換せずにフォームへ戻す', () => {
     expect(localDateInput(new Date(2026, 8, 8, 0, 0, 0))).toBe('2026-09-08')

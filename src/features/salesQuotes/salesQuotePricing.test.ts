@@ -1,19 +1,33 @@
 import { describe, expect, it } from 'vitest'
-import { buildQuotePreview, parseQuoteSettings, toFreeePayload, type ConfirmedLine } from '../../../functions/src/salesQuoteModel'
+import { buildQuotePreview, calculateSalesUnitPrice, parseQuoteSettings, toFreeePayload, type ConfirmedLine } from '../../../functions/src/salesQuoteModel'
 import { createFreeeQuotation, freeeResult } from '../../../functions/src/freeeQuotationTransport'
 
-const line: ConfirmedLine = { rfqItemId: 'a', lineNo: 1, partNumber: 'B-01', quantity: 2, unit: 'pcs', originalDescription: '六角ボルト', translatedDescription: 'Hex bolt', outputDescription: 'Hex bolt\nStainless steel' }
+const line: ConfirmedLine = { rfqItemId: 'a', lineNo: 1, manufacturerName: 'ACME', partNumber: 'B-01', quantity: 2, unit: 'pcs', originalDescription: '六角ボルト', translatedDescription: 'Hex bolt', outputDescription: 'Hex bolt\nStainless steel' }
 const settings = (change: Record<string, unknown> = {}) => parseQuoteSettings({ partnerId: '123', quotationDate: '2026-09-14', expirationDate: '', subject: 'Quotation', quotationNumber: '', partnerTitle: '御中', taxEntryMethod: 'out', taxFraction: 'omit', lineAmountFraction: 'omit', note: '', translationsReviewed: false, prices: [{ rfqItemId: 'a', unitPrice: '100.125', taxRate: 10, reducedTaxRate: false }], ...change })
 const preview = () => buildQuotePreview(settings(), [line])
 const payload = () => toFreeePayload(preview(), 456, 'IEPpurchase:rfq:v1')
 const response = (change: Record<string, unknown> = {}) => ({ quotation: { id: 1, quotation_number: 'Q-1', company_id: 456, partner_id: 123, total_amount: 220, amount_tax: 20, lines: payload().lines, report_url: 'https://invoice.freee.co.jp/reports/1', ...change } })
 
 describe('sales quote calculations and immutable translated lines', () => {
+  it('calculates a selling price from cost, blank shipping and margin rounded to 100 yen', () => {
+    expect(calculateSalesUnitPrice('1234', '', '1.2')).toBe('1500')
+    expect(calculateSalesUnitPrice('1234', '100', '1.2')).toBe('1600')
+    expect(calculateSalesUnitPrice('', '', '1.2')).toBe('')
+  })
+  it('keeps cost inputs internal and sends only the calculated unit price to freee', () => {
+    const configured = settings({ prices: [{ rfqItemId: 'a', purchaseAmount: '1000', shippingFee: '', margin: '1.2', unitPrice: '1200', taxRate: 10, reducedTaxRate: false }] })
+    const data = toFreeePayload(buildQuotePreview(configured, [line]), 456, 'marker')
+    expect(data.lines[0]).toMatchObject({ unit_price: '1200' })
+    expect(data.lines[0]).not.toHaveProperty('purchaseAmount')
+    expect(data.lines[0]).not.toHaveProperty('shippingFee')
+    expect(data.lines[0]).not.toHaveProperty('margin')
+    expect(() => settings({ prices: [{ rfqItemId: 'a', purchaseAmount: '1000', shippingFee: '', margin: '1.2', unitPrice: '1300', taxRate: 10, reducedTaxRate: false }] })).toThrow()
+  })
   it('preserves source newlines while sending a single-line description without retranslation', () => {
     const original = structuredClone(line), p = preview(), data = payload()
     expect(line).toEqual(original)
     expect(p).toMatchObject({ subtotal: 200, tax: 20, total: 220 })
-    expect(data.lines[0]).toMatchObject({ description: 'B-01 Hex bolt Stainless steel', quantity: 2, unit: 'pcs', unit_price: '100.125', withholding: false })
+    expect(data.lines[0]).toMatchObject({ description: 'ACME B-01 Hex bolt Stainless steel', quantity: 2, unit: 'pcs', unit_price: '100.125', withholding: false })
     expect(data).not.toHaveProperty('expiration_date')
     expect(data).not.toHaveProperty('quotation_number')
     expect(JSON.stringify(data)).not.toContain('六角ボルト')
@@ -21,7 +35,7 @@ describe('sales quote calculations and immutable translated lines', () => {
   it('normalizes CRLF, tabs and line separators and rejects other control characters', () => {
     const source = { ...line, outputDescription: 'Hex\r\nbolt\tSteel\u2028M10\u2029End' }
     const p = buildQuotePreview(settings(), [source])
-    expect(p.lines[0].description).toBe('B-01 Hex bolt Steel M10 End')
+    expect(p.lines[0].description).toBe('ACME B-01 Hex bolt Steel M10 End')
     expect(p.lines[0].outputDescription).toBe(source.outputDescription)
     expect(toFreeePayload(p, 456, 'marker').lines[0].description).toBe(p.lines[0].description)
     expect(() => buildQuotePreview(settings(), [{ ...line, outputDescription: 'Hex' + String.fromCharCode(0) + 'bolt' }])).toThrow('制御文字')
@@ -60,7 +74,7 @@ describe('sales quote calculations and immutable translated lines', () => {
     expect(toFreeePayload(p, 456, 'marker').partner_id).toBe(111111)
   })
   it('rejects too long descriptions without truncating, accepts exactly 255 code points', () => {
-    expect(buildQuotePreview(settings(), [{ ...line, partNumber: '', outputDescription: 'x'.repeat(255) }]).lines[0].description.length).toBe(255)
+    expect(buildQuotePreview(settings(), [{ ...line, manufacturerName: '', partNumber: '', outputDescription: 'x'.repeat(255) }]).lines[0].description.length).toBe(255)
     expect(() => buildQuotePreview(settings(), [{ ...line, outputDescription: 'x'.repeat(255) }])).toThrow('255')
     expect(() => buildQuotePreview(settings(), [{ ...line, outputDescription: ' ' }])).toThrow()
     expect(() => buildQuotePreview(settings(), [{ ...line, quantity: 0.0001 }])).toThrow('数量')

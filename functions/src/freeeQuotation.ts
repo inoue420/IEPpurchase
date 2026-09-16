@@ -82,10 +82,12 @@ export const saveSalesQuotePricing = onCall(options, async request => {
     const previous = current.data() as ExportRecord | undefined
     if ((previous?.revision ?? 0) !== expectedRevision) throw new HttpsError('aborted', '別の利用者が更新しました。保存済みの内容を読み直してください。')
     if (previous && !mutable(previous.status)) throw new HttpsError('failed-precondition', '送信開始後の販売見積は変更できません。')
-    const source: ConfirmedLine[] = items.docs.map(item => {
+    const rfqItems = await Promise.all(items.docs.map(item => transaction.get(db.doc(`rfqs/${rfqId}/items/${item.id}`))))
+    const source: ConfirmedLine[] = items.docs.map((item, index) => {
       const d = item.data()
       if (d.rfqId !== rfqId || d.rfqItemId !== item.id || !(d.confirmedAt instanceof Timestamp)) throw new HttpsError('failed-precondition', '未確定または不整合な翻訳明細があります。')
       return { rfqItemId: item.id, lineNo: d.lineNo, partNumber: d.partNumber, quantity: d.quantity, unit: d.unit,
+        manufacturerName: typeof rfqItems[index].get('manufacturerName') === 'string' ? rfqItems[index].get('manufacturerName') : '',
         originalDescription: d.originalDescription, translatedDescription: d.translatedDescription, outputDescription: d.outputDescription }
     })
     let preview: QuotePreview

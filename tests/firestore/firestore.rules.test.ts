@@ -372,3 +372,67 @@ describe('marketplace offer snapshots', () => {
     await assertFails(setDoc(doc(env.unauthenticatedContext().firestore(), 'marketplaceOffers/anon'), offer()))
   })
 })
+
+describe('sales quote translation re-editing', () => {
+  const quote = (status: 'draft' | 'confirmed' = 'draft') => ({
+    rfqId: 'existing', status,
+    confirmedAt: status === 'confirmed' ? serverTimestamp() : null,
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+  })
+  const quoteItem = (confirmed = false, changes: DocumentData = {}) => ({
+    rfqId: 'existing', rfqItemId: 'existing', lineNo: 1, partNumber: '', quantity: 1, unit: '個',
+    originalDescription: '依頼品目', translatedDescription: '', outputDescription: '',
+    confirmedAt: confirmed ? serverTimestamp() : null,
+    createdAt: serverTimestamp(), updatedAt: serverTimestamp(), ...changes,
+  })
+  async function createAndConfirm() {
+    const db = dbFor('member'), batch = writeBatch(db)
+    batch.set(doc(db, 'salesQuotes/existing'), quote())
+    batch.set(doc(db, 'salesQuotes/existing/items/existing'), quoteItem())
+    await assertSucceeds(batch.commit())
+    const confirmBatch = writeBatch(db)
+    confirmBatch.update(doc(db, 'salesQuotes/existing'), { status: 'confirmed', confirmedAt: serverTimestamp(), updatedAt: serverTimestamp() })
+    confirmBatch.update(doc(db, 'salesQuotes/existing/items/existing'), { confirmedAt: serverTimestamp(), updatedAt: serverTimestamp() })
+    await assertSucceeds(confirmBatch.commit())
+    return db
+  }
+
+  it('returns a confirmed translation to draft and allows output correction', async () => {
+    const db = await createAndConfirm(), batch = writeBatch(db)
+    batch.update(doc(db, 'salesQuotes/existing'), { status: 'draft', confirmedAt: null, updatedAt: serverTimestamp() })
+    batch.update(doc(db, 'salesQuotes/existing/items/existing'), { confirmedAt: null, updatedAt: serverTimestamp() })
+    await assertSucceeds(batch.commit())
+    await assertSucceeds(updateDoc(doc(db, 'salesQuotes/existing/items/existing'), { outputDescription: 'Corrected', updatedAt: serverTimestamp() }))
+  })
+
+  it('reimports the latest RFQ translation and resets the output text', async () => {
+    const db = await createAndConfirm()
+    await assertSucceeds(updateDoc(doc(db, 'rfqs/existing/items/existing'), { translatedDescription: 'Updated translation', updatedAt: serverTimestamp() }))
+    const batch = writeBatch(db)
+    batch.update(doc(db, 'salesQuotes/existing'), { status: 'draft', confirmedAt: null, updatedAt: serverTimestamp() })
+    batch.update(doc(db, 'salesQuotes/existing/items/existing'), {
+      translatedDescription: 'Updated translation', outputDescription: 'Updated translation', confirmedAt: null, updatedAt: serverTimestamp(),
+    })
+    await assertSucceeds(batch.commit())
+  })
+
+  it('removes a cancelled line during reimport', async () => {
+    const db = await createAndConfirm()
+    await assertSucceeds(updateDoc(doc(db, 'rfqs/existing/items/existing'), { status: 'cancelled', updatedAt: serverTimestamp() }))
+    const batch = writeBatch(db)
+    batch.update(doc(db, 'salesQuotes/existing'), { status: 'draft', confirmedAt: null, updatedAt: serverTimestamp() })
+    batch.delete(doc(db, 'salesQuotes/existing/items/existing'))
+    await assertSucceeds(batch.commit())
+  })
+
+  it('protects confirmed translations after a freee save exists', async () => {
+    const db = await createAndConfirm()
+    await env.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'salesQuotes/existing/freeeExports/current'), { status: 'draft' })
+    })
+    const batch = writeBatch(db)
+    batch.update(doc(db, 'salesQuotes/existing'), { status: 'draft', confirmedAt: null, updatedAt: serverTimestamp() })
+    batch.update(doc(db, 'salesQuotes/existing/items/existing'), { confirmedAt: null, updatedAt: serverTimestamp() })
+    await assertFails(batch.commit())
+  })
+})

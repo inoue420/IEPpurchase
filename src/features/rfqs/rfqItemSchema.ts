@@ -20,6 +20,7 @@ export const rfqItemSchema = z.object({
   productId: z.string().max(128), manufacturerId: z.string().max(128), manufacturerName: z.string().trim().max(200, 'メーカー名は200文字以内で入力してください。'),
   partNumber: z.string().trim().max(200, '品番は200文字以内で入力してください。'), productName: z.string().trim().max(500, '商品名は500文字以内で入力してください。'),
   quantity: z.coerce.number().positive('数量は0より大きい数値を入力してください。').max(1_000_000_000, '数量が大きすぎます。'),
+  supplierResponseUnitPrice: z.union([z.null(), z.coerce.number().int('仕入先回答単価は整数で入力してください。').min(0, '仕入先回答単価は0円以上で入力してください。').max(1_000_000_000, '仕入先回答単価が大きすぎます。')]),
   unit: z.string().trim().min(1, '単位を入力してください。').max(50, '単位は50文字以内で入力してください。'),
   supplierQuoteRequestEnabled: z.boolean(), marketplaceOfferEnabled: z.boolean(),
   ecPurchaseCandidates: z.array(ecPurchaseCandidateSchema).max(5, 'EC購入候補は5件まで登録できます。'),

@@ -1,6 +1,9 @@
 // Pure model shared by the browser preview and the server. Money is JPY.
 export type Fraction = 'omit' | 'round' | 'round_up'
-export interface QuotePrice { rfqItemId: string; unitPrice: string; taxRate: 0 | 8 | 10; reducedTaxRate: boolean }
+export interface QuotePrice {
+  rfqItemId: string; purchaseAmount: string; shippingFee: string; margin: string
+  unitPrice: string; taxRate: 0 | 8 | 10; reducedTaxRate: boolean
+}
 export interface QuoteSettings {
   partnerId: string; quotationDate: string; expirationDate: string; subject: string
   quotationNumber: string; partnerTitle: '御中' | '様' | '(空白)'
@@ -9,7 +12,7 @@ export interface QuoteSettings {
 }
 export interface ConfirmedLine {
   rfqItemId: string; lineNo: number; partNumber: string; quantity: number; unit: string
-  originalDescription: string; translatedDescription: string; outputDescription: string
+  manufacturerName?: string; originalDescription: string; translatedDescription: string; outputDescription: string
 }
 export interface PricedLine extends ConfirmedLine, QuotePrice { description: string; amount: number }
 export interface QuotePreview {
@@ -40,6 +43,19 @@ function choice<T extends string | number>(value: unknown, choices: readonly T[]
   if (!choices.includes(value as T)) throw new Error(`${label}が不正です。`)
   return value as T
 }
+function optionalMoney(value: unknown, label: string): string {
+  if (value === undefined || value === '') return ''
+  if (typeof value !== 'string' || !/^\d{1,10}$/.test(value) || Number(value) > 1_000_000_000) throw new Error(`${label}は0〜10億円の整数で入力してください。`)
+  return value
+}
+export function calculateSalesUnitPrice(purchaseAmount: string, shippingFee: string, margin: string): string {
+  if (!purchaseAmount) return ''
+  const purchase = Number(purchaseAmount), shipping = shippingFee === '' ? 0 : Number(shippingFee), multiplier = Number(margin)
+  if (!/^\d{1,10}$/.test(purchaseAmount) || purchase > 1_000_000_000) return ''
+  if (shippingFee !== '' && (!/^\d{1,10}$/.test(shippingFee) || shipping > 1_000_000_000)) return ''
+  if (!/^\d+(\.\d{1,3})?$/.test(margin) || multiplier <= 0 || multiplier > 100) return ''
+  return String(Math.round(((purchase + shipping) * multiplier) / 100) * 100)
+}
 export function parseQuoteSettings(value: unknown): QuoteSettings {
   const d = record(value)
   const partnerId = text(d.partnerId, 'freee取引先ID', 16)
@@ -51,11 +67,16 @@ export function parseQuoteSettings(value: unknown): QuoteSettings {
   if (!Array.isArray(d.prices) || !d.prices.length || d.prices.length > 100) throw new Error('明細は1〜100行で指定してください。')
   const prices = d.prices.map(value => {
     const p = record(value)
+    const purchaseAmount = optionalMoney(p.purchaseAmount, '購入金額')
+    const shippingFee = optionalMoney(p.shippingFee, '送料')
+    const margin = p.margin === undefined ? '1.2' : text(p.margin, 'マージン', 8)
+    if (!/^\d+(\.\d{1,3})?$/.test(margin) || Number(margin) <= 0 || Number(margin) > 100) throw new Error('マージンは0より大きく100以下、小数3桁以内で入力してください。')
     const unitPrice = text(p.unitPrice, '販売単価', 14)
     if (!/^\d{1,10}(\.\d{1,3})?$/.test(unitPrice) || Number(unitPrice) > 1_000_000_000) throw new Error('販売単価は0〜10億円、小数3桁以内で入力してください。')
+    if (purchaseAmount && calculateSalesUnitPrice(purchaseAmount, shippingFee, margin) !== unitPrice) throw new Error('販売単価は（購入金額＋送料）×マージンを100円単位に丸めた金額と一致させてください。')
     const taxRate = choice(p.taxRate, [0, 8, 10] as const, '税率')
     if (typeof p.reducedTaxRate !== 'boolean' || (p.reducedTaxRate && taxRate !== 8)) throw new Error('軽減税率は8%のみ指定できます。')
-    return { rfqItemId: text(p.rfqItemId, '品目ID', 128), unitPrice, taxRate, reducedTaxRate: p.reducedTaxRate }
+    return { rfqItemId: text(p.rfqItemId, '品目ID', 128), purchaseAmount, shippingFee, margin, unitPrice, taxRate, reducedTaxRate: p.reducedTaxRate }
   })
   if (new Set(prices.map(p => p.rfqItemId)).size !== prices.length) throw new Error('明細が重複しています。')
   if (typeof d.translationsReviewed !== 'boolean') throw new Error('翻訳確認の指定が不正です。')
@@ -79,9 +100,9 @@ function divide(amount: bigint, divisor: bigint, method: Fraction): bigint {
 export function hasUnsupportedFreeeDescription(value: string): boolean {
   return /[\p{Cc}\p{Zl}\p{Zp}]/u.test(value)
 }
-export function freeeDescription(partNumber: string, outputDescription: string): string {
+export function freeeDescription(manufacturerName: string, partNumber: string, outputDescription: string): string {
   // Keep source text intact; only the external display description is single-line.
-  return (partNumber ? partNumber + ' ' + outputDescription : outputDescription)
+  return [manufacturerName.trim(), partNumber.trim(), outputDescription].filter(Boolean).join(' ')
     .replace(/\r\n|[\r\n\t\p{Zl}\p{Zp}]/gu, ' ')
 }
 export function buildQuotePreview(settings: QuoteSettings, source: ConfirmedLine[]): QuotePreview {
@@ -92,8 +113,8 @@ export function buildQuotePreview(settings: QuoteSettings, source: ConfirmedLine
     const price = settings.prices.find(p => p.rfqItemId === s.rfqItemId)
     if (!price) throw new Error('確定明細に対応する販売単価がありません。')
     text(s.outputDescription, `明細${s.lineNo}の確定出力文`, 5000)
-    text(s.partNumber, '品番', 200, false); text(s.unit, '単位', 255)
-    const description = freeeDescription(s.partNumber, s.outputDescription)
+    text(s.manufacturerName ?? '', 'メーカー名', 500, false); text(s.partNumber, '品番', 200, false); text(s.unit, '単位', 255)
+    const description = freeeDescription(s.manufacturerName ?? '', s.partNumber, s.outputDescription)
     if (hasUnsupportedFreeeDescription(description)) throw new Error(`明細${s.lineNo}：摘要に送信できない制御文字があります。品番・確定出力文を確認してください。`)
     if ([...description].length > 255) throw new Error(`明細${s.lineNo}：品番・区切りスペースを含めるとfreeeの摘要上限255文字を超えます（${[...description].length}文字）。翻訳明細の新しい版が必要です。`)
     if (!s.translatedDescription.trim() || /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(s.outputDescription)) warnings.push(`明細${s.lineNo}：登録英訳が未入力、または出力文に日本語が含まれています。`)

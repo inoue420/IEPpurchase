@@ -4,8 +4,9 @@ import { Alert, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, Dia
 import { Timestamp, collection, doc, limit, onSnapshot, orderBy, query } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
 import { firestore, firebaseFunctions } from '../../firebase/firebase'
-import { freeeDescription, hasUnsupportedFreeeDescription, buildQuotePreview, parseQuoteSettings, type QuotePreview, type QuoteSettings } from '../../../functions/src/salesQuoteModel'
+import { calculateSalesUnitPrice, freeeDescription, hasUnsupportedFreeeDescription, buildQuotePreview, parseQuoteSettings, type QuotePreview, type QuoteSettings } from '../../../functions/src/salesQuoteModel'
 import type { SalesQuoteTranslationItem } from './salesQuoteTranslationRepository'
+import type { RfqItem } from '../rfqs/rfqItemRepository'
 import { FreeePartnerPicker, type SelectedFreeePartner } from './FreeePartnerPicker'
 
 interface SavedQuote {
@@ -19,10 +20,14 @@ const yen = (value: number) => `${value.toLocaleString('ja-JP')} 円`
 const fractionLabels = { omit: '切り捨て', round: '四捨五入', round_up: '切り上げ' }
 const statusLabels = { draft: '下書き', sending: '送信中・結果確認待ち', failed: '登録拒否（再試行可能）', uncertain: '結果不明（再作成停止）', sent: '作成済み' }
 const actionLabels: Record<string, string> = { saved: '販売見積保存', sending: '送信開始', failed: '登録拒否', uncertain: '結果不明', sent: '作成成功', reconciled: '作成結果を照合' }
-function defaults(items: SalesQuoteTranslationItem[]): QuoteSettings {
+function purchaseAmount(item: RfqItem | undefined): string {
+  const selected = item?.ecPurchaseCandidates.filter(candidate => candidate.purchasePlanned) ?? []
+  return selected.length ? String(selected.reduce((sum, candidate) => sum + candidate.price, 0)) : ''
+}
+function defaults(items: SalesQuoteTranslationItem[], rfqItems: RfqItem[]): QuoteSettings {
   const today = new Date().toLocaleDateString('sv-SE', { timeZone: 'Asia/Tokyo' })
   return { partnerId: '', quotationDate: today, expirationDate: '', subject: '', quotationNumber: '', partnerTitle: '御中', taxEntryMethod: 'out', taxFraction: 'omit', lineAmountFraction: 'omit', note: '', translationsReviewed: false,
-    prices: items.map(item => ({ rfqItemId: item.id, unitPrice: '', taxRate: 10, reducedTaxRate: false })) }
+    prices: items.map(item => { const purchase = purchaseAmount(rfqItems.find(rfqItem => rfqItem.id === item.id)), margin = '1.2'; return { rfqItemId: item.id, purchaseAmount: purchase, shippingFee: '', margin, unitPrice: calculateSalesUnitPrice(purchase, '', margin), taxRate: 10, reducedTaxRate: false } }) }
 }
 function Preview({ preview }: { preview: QuotePreview }) {
   const s = preview.settings
@@ -31,15 +36,17 @@ function Preview({ preview }: { preview: QuotePreview }) {
     <Typography>freee取引先ID：{s.partnerId} ／ 敬称：{s.partnerTitle} ／ 見積書番号：{s.quotationNumber || 'freeeで自動採番'}</Typography>
     <Typography variant="body2">JPY・{s.taxEntryMethod === 'out' ? '税別' : '税込'}単価 ／ 明細金額：{fractionLabels[s.lineAmountFraction]} ／ 税率ごとの消費税：{fractionLabels[s.taxFraction]}</Typography>
     {preview.warnings.map(warning => <Alert key={warning} severity="warning">{warning} 利用者による確認済みです。</Alert>)}
-    <TableContainer><Table size="small"><TableHead><TableRow><TableCell>freee摘要（品番＋確定出力文）</TableCell><TableCell>数量</TableCell><TableCell>販売単価</TableCell><TableCell>税率</TableCell><TableCell>明細金額</TableCell></TableRow></TableHead><TableBody>
+    <TableContainer><Table size="small"><TableHead><TableRow><TableCell>freee摘要（メーカー名＋品番＋確定出力文）</TableCell><TableCell>数量</TableCell><TableCell>販売単価</TableCell><TableCell>税率</TableCell><TableCell>明細金額</TableCell></TableRow></TableHead><TableBody>
       {preview.lines.map(line => <TableRow key={line.rfqItemId}><TableCell sx={{ whiteSpace: 'pre-wrap', minWidth: 240 }}>{line.description}</TableCell><TableCell>{line.quantity} {line.unit}</TableCell><TableCell>{line.unitPrice} 円</TableCell><TableCell>{line.taxRate}%{line.reducedTaxRate ? '（軽減）' : ''}</TableCell><TableCell>{yen(line.amount)}</TableCell></TableRow>)}
     </TableBody></Table></TableContainer>
     <Typography fontWeight="bold">税抜小計：{yen(preview.subtotal)} ／ 消費税：{yen(preview.tax)} ／ 合計：{yen(preview.total)}</Typography>
     {s.note && <Typography sx={{ whiteSpace: 'pre-wrap' }}>備考：{s.note}</Typography>}
   </Stack>
 }
-function Editor({ rfqId, items, saved }: { rfqId: string; items: SalesQuoteTranslationItem[]; saved: SavedQuote | null }) {
-  const [settings, setSettings] = useState<QuoteSettings>(() => saved?.preview.settings ?? defaults(items))
+type DisplayItem = SalesQuoteTranslationItem & { manufacturerName: string }
+function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: DisplayItem[]; rfqItems: RfqItem[]; saved: SavedQuote | null }) {
+  const initialSettings = () => saved?.preview.settings ?? defaults(items, rfqItems)
+  const [settings, setSettings] = useState<QuoteSettings>(initialSettings)
   const [baseRevision, setBaseRevision] = useState(saved?.revision ?? 0)
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [confirming, setConfirming] = useState<SavedQuote | null>(null)
   const [quotationId, setQuotationId] = useState('')
@@ -52,12 +59,22 @@ function Editor({ rfqId, items, saved }: { rfqId: string; items: SalesQuoteTrans
     setBaseRevision(saved.revision)
     setPartner(saved.partnerName ? { id: Number(saved.preview.settings.partnerId), name: saved.partnerName, companyId: saved.companyId } : null)
   }, [baseRevision, saved])
+  const purchaseSignature = items.map(item => `${item.id}:${purchaseAmount(rfqItems.find(rfqItem => rfqItem.id === item.id))}`).join('|')
+  useEffect(() => {
+    setSettings(previous => ({ ...previous, prices: previous.prices.map(price => {
+      const purchase = purchaseAmount(rfqItems.find(item => item.id === price.rfqItemId))
+      if (price.purchaseAmount === purchase) return price
+      const shippingFee = price.shippingFee ?? '', margin = price.margin ?? '1.2'
+      return { ...price, purchaseAmount: purchase, shippingFee, margin, unitPrice: calculateSalesUnitPrice(purchase, shippingFee, margin) }
+    }) }))
+  }, [purchaseSignature, rfqItems])
   const locked = !!saved && !['draft', 'failed'].includes(saved.status)
   const stale = (saved?.revision ?? 0) !== baseRevision
   const needsDescriptionResave = !!saved?.preview.lines.some(line => hasUnsupportedFreeeDescription(line.description))
-  const dirty = needsDescriptionResave || !saved || !salesQuoteSettingsEqual(settings, saved.preview.settings) || partner?.name !== saved.partnerName || (!!partner && partner.companyId !== saved.companyId)
   let localPreview: QuotePreview | null = null, validation = ''
   try { localPreview = buildQuotePreview(parseQuoteSettings(settings), items) } catch (cause) { validation = cause instanceof Error ? cause.message : '入力を確認してください。' }
+  const sourceChanged = !!saved && !!localPreview && localPreview.lines.some(line => saved.preview.lines.find(previous => previous.rfqItemId === line.rfqItemId)?.description !== line.description)
+  const dirty = needsDescriptionResave || sourceChanged || !saved || !salesQuoteSettingsEqual(settings, saved.preview.settings) || partner?.name !== saved.partnerName || (!!partner && partner.companyId !== saved.companyId)
   function update<K extends keyof QuoteSettings>(key: K, value: QuoteSettings[K]) { setSettings(previous => ({ ...previous, [key]: value })) }
   async function save() {
     if (!partner) { setError('freee取引先を名前で選択してください。'); return }
@@ -106,10 +123,11 @@ function Editor({ rfqId, items, saved }: { rfqId: string; items: SalesQuoteTrans
           <TextField select label="単価の税区分" value={settings.taxEntryMethod} onChange={e => update('taxEntryMethod', e.target.value as QuoteSettings['taxEntryMethod'])}><MenuItem value="out">税別（外税）</MenuItem><MenuItem value="in">税込（内税）</MenuItem></TextField>
           {(['lineAmountFraction', 'taxFraction'] as const).map(key => <TextField key={key} select label={key === 'taxFraction' ? '消費税の端数処理' : '明細金額の端数処理'} value={settings[key]} onChange={e => update(key, e.target.value as QuoteSettings[typeof key])}>{Object.entries(fractionLabels).map(([value, label]) => <MenuItem key={value} value={value}>{label}</MenuItem>)}</TextField>)}
         </Stack>
-        <TableContainer><Table size="small"><TableHead><TableRow><TableCell>確定明細</TableCell><TableCell>数量</TableCell><TableCell>販売単価（円）</TableCell><TableCell>税率</TableCell></TableRow></TableHead><TableBody>{items.map(item => {
+        <TableContainer><Table size="small"><TableHead><TableRow><TableCell>確定明細</TableCell><TableCell>数量</TableCell><TableCell>購入金額（円）</TableCell><TableCell>送料（円）</TableCell><TableCell>マージン</TableCell><TableCell>販売単価（円）</TableCell><TableCell>税率</TableCell></TableRow></TableHead><TableBody>{items.map(item => {
           const price = settings.prices.find(p => p.rfqItemId === item.id)
           const changePrice = (change: Partial<QuoteSettings['prices'][number]>) => update('prices', settings.prices.map(p => p.rfqItemId === item.id ? { ...p, ...change } : p))
-          return <TableRow key={item.id}><TableCell sx={{ minWidth: 220, whiteSpace: 'pre-wrap' }}>{item.partNumber}<br />{item.outputDescription}<Typography variant="caption" display="block">摘要 {Array.from(freeeDescription(item.partNumber, item.outputDescription)).length}/255文字</Typography>{!item.translatedDescription.trim() && <Typography color="warning.main" variant="caption">登録英訳なし：出力文の確認が必要</Typography>}</TableCell><TableCell>{item.quantity} {item.unit}</TableCell><TableCell><TextField required size="small" value={price?.unitPrice ?? ''} onChange={e => changePrice({ unitPrice: e.target.value })} slotProps={{ htmlInput: { inputMode: 'decimal', 'aria-label': `明細${item.lineNo}の販売単価` } }} /></TableCell><TableCell><TextField select size="small" value={price?.reducedTaxRate ? '8r' : String(price?.taxRate ?? 10)} onChange={e => changePrice({ taxRate: e.target.value === '8r' ? 8 : Number(e.target.value) as 0 | 8 | 10, reducedTaxRate: e.target.value === '8r' })} slotProps={{ htmlInput: { 'aria-label': `明細${item.lineNo}の税率` } }}><MenuItem value="10">10%</MenuItem><MenuItem value="8r">8%（軽減）</MenuItem><MenuItem value="8">8%</MenuItem><MenuItem value="0">0%</MenuItem></TextField></TableCell></TableRow>
+          const changeCost = (change: Partial<Pick<QuoteSettings['prices'][number], 'purchaseAmount' | 'shippingFee' | 'margin'>>) => { if (!price) return; const next = { ...price, ...change }; changePrice({ ...change, unitPrice: calculateSalesUnitPrice(next.purchaseAmount, next.shippingFee, next.margin) }) }
+          return <TableRow key={item.id}><TableCell sx={{ minWidth: 220, whiteSpace: 'pre-wrap' }}>{item.manufacturerName && <>{item.manufacturerName}<br /></>}{item.partNumber}<br />{item.outputDescription}<Typography variant="caption" display="block">摘要 {Array.from(freeeDescription(item.manufacturerName, item.partNumber, item.outputDescription)).length}/255文字</Typography>{!item.translatedDescription.trim() && <Typography color="warning.main" variant="caption">登録英訳なし：出力文の確認が必要</Typography>}</TableCell><TableCell>{item.quantity} {item.unit}</TableCell><TableCell><TextField size="small" value={price?.purchaseAmount ?? ''} placeholder="未選択" onChange={e => changeCost({ purchaseAmount: e.target.value })} slotProps={{ htmlInput: { inputMode: 'numeric', 'aria-label': `明細${item.lineNo}の購入金額` } }} helperText="購入予定候補から自動転記" /></TableCell><TableCell><TextField size="small" value={price?.shippingFee ?? ''} placeholder="未記載" onChange={e => changeCost({ shippingFee: e.target.value })} slotProps={{ htmlInput: { inputMode: 'numeric', 'aria-label': `明細${item.lineNo}の送料` } }} /></TableCell><TableCell><TextField required size="small" value={price?.margin ?? '1.2'} onChange={e => changeCost({ margin: e.target.value })} slotProps={{ htmlInput: { inputMode: 'decimal', 'aria-label': `明細${item.lineNo}のマージン` } }} /></TableCell><TableCell><TextField required size="small" value={price?.unitPrice ?? ''} slotProps={{ htmlInput: { readOnly: true, 'aria-label': `明細${item.lineNo}の販売単価` } }} helperText="100円単位" /></TableCell><TableCell><TextField select size="small" value={price?.reducedTaxRate ? '8r' : String(price?.taxRate ?? 10)} onChange={e => changePrice({ taxRate: e.target.value === '8r' ? 8 : Number(e.target.value) as 0 | 8 | 10, reducedTaxRate: e.target.value === '8r' })} slotProps={{ htmlInput: { 'aria-label': `明細${item.lineNo}の税率` } }}><MenuItem value="10">10%</MenuItem><MenuItem value="8r">8%（軽減）</MenuItem><MenuItem value="8">8%</MenuItem><MenuItem value="0">0%</MenuItem></TextField></TableCell></TableRow>
         })}</TableBody></Table></TableContainer>
         <TextField label="見積書備考" multiline minRows={2} value={settings.note} onChange={e => update('note', e.target.value)} />
         <FormControlLabel control={<Checkbox checked={settings.translationsReviewed} onChange={e => update('translationsReviewed', e.target.checked)} />} label="登録英訳が未入力、または日本語を含む明細も、出力文が顧客向けとして適切なことを確認しました" />
@@ -130,7 +148,7 @@ function Editor({ rfqId, items, saved }: { rfqId: string; items: SalesQuoteTrans
   </Stack>
 }
 
-export function FreeeQuotationSection({ rfqId, items }: { rfqId: string; items: SalesQuoteTranslationItem[] }) {
+export function FreeeQuotationSection({ rfqId, items, rfqItems }: { rfqId: string; items: SalesQuoteTranslationItem[]; rfqItems: RfqItem[] }) {
   const [saved, setSaved] = useState<SavedQuote | null>(null), [loaded, setLoaded] = useState(false), [error, setError] = useState('')
   const [events, setEvents] = useState<History[]>([]), [versions, setVersions] = useState<(SavedQuote & { id: string })[]>([]), [version, setVersion] = useState<SavedQuote | null>(null)
   useEffect(() => {
@@ -145,7 +163,7 @@ export function FreeeQuotationSection({ rfqId, items }: { rfqId: string; items: 
     <Typography component="h2" variant="h6">販売見積・freee転記</Typography>
     <Typography variant="body2">確定した品番・数量・出力文を使い、販売単価を設定します。JPY、小数3桁までの数量・単価、100明細まで対応します。</Typography>
     {error && <Alert severity="error">{error}</Alert>}
-    {!loaded ? <Typography>保存状態を読み込み中…</Typography> : !error && <Editor rfqId={rfqId} items={items} saved={saved} />}
+    {!loaded ? <Typography>保存状態を読み込み中…</Typography> : !error && <Editor rfqId={rfqId} items={items.map(item => ({ ...item, manufacturerName: rfqItems.find(rfqItem => rfqItem.id === item.id)?.manufacturerName ?? '' }))} rfqItems={rfqItems} saved={saved} />}
     {versions.length > 0 && <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap"><Typography>保存履歴（最新20版）：</Typography>{versions.map(v => <Button key={v.id} size="small" onClick={() => setVersion(v)}>版 {v.revision}</Button>)}</Stack>}
     {events.length > 0 && <><Typography variant="subtitle1">操作・結果履歴（最新20件）</Typography>{events.map(event => <Typography key={event.id} variant="body2">{event.createdAt instanceof Timestamp ? event.createdAt.toDate().toLocaleString('ja-JP') : '記録中'} ／ 版 {event.revision} ／ {actionLabels[event.action] ?? event.action} ／ 操作者：{event.userId}{event.message ? ` ／ ${event.message}` : ''}</Typography>)}</>}
   </Stack><Dialog open={!!version} fullWidth maxWidth="lg" onClose={() => setVersion(null)}><DialogTitle>保存版 {version?.revision}</DialogTitle><DialogContent>{version && <Preview preview={version.preview} />}</DialogContent><DialogActions><Button onClick={() => setVersion(null)}>閉じる</Button></DialogActions></Dialog></Paper>

@@ -17,7 +17,7 @@ let env: RulesTestEnvironment
 let app: ReturnType<typeof initializeApp>
 let db: ReturnType<typeof getFirestore>
 const source = { rfqId: 'rfq', rfqItemId: 'item', lineNo: 1, partNumber: 'A-1', quantity: 2, unit: 'pcs', originalDescription: 'ボルト', translatedDescription: 'Bolt', outputDescription: 'Bolt' }
-const settings: QuoteSettings = { partnerId: '123', quotationDate: '2026-09-14', expirationDate: '', subject: 'Test', quotationNumber: '', partnerTitle: '御中', taxEntryMethod: 'out', taxFraction: 'omit', lineAmountFraction: 'omit', note: '', translationsReviewed: false, prices: [{ rfqItemId: 'item', unitPrice: '100', taxRate: 10, reducedTaxRate: false }] }
+const settings: QuoteSettings = { partnerId: '123', quotationDate: '2026-09-14', expirationDate: '', subject: 'Test', quotationNumber: '', partnerTitle: '御中', taxEntryMethod: 'out', taxFraction: 'omit', lineAmountFraction: 'omit', note: '', translationsReviewed: false, prices: [{ rfqItemId: 'item', purchaseAmount: '', shippingFee: '', margin: '1.2', unitPrice: '100', taxRate: 10, reducedTaxRate: false }] }
 const run = (call: Callable, data: Record<string, unknown>, uid = 'user') => call.run({ auth: { uid }, data: { rfqId: 'rfq', ...data } })
 const save = (expectedRevision = 0) => run(saveSalesQuotePricing, { settings, expectedRevision })
 const send = (saved: Saved) => run(sendFreeeQuotation, { revision: saved.revision, digest: saved.digest, confirm: true })
@@ -37,6 +37,7 @@ beforeEach(async () => {
   vi.spyOn(SecretManagerServiceClient.prototype, 'accessSecretVersion').mockImplementation((() => Promise.resolve([{ payload: { data: Buffer.from(JSON.stringify({ companyId: '456', accessToken: 'FAKE', authorizedAt: new Date().toISOString(), expiresIn: 21600 })) } }])) as never)
   await env.clearFirestore()
   await db.doc('rfqs/rfq').set({ status: 'quoting', customerId: 'customer', customerName: 'Customer' })
+  await db.doc('rfqs/rfq/items/item').set({ manufacturerName: 'ACME' })
   await db.doc('salesQuotes/rfq').set({ rfqId: 'rfq', status: 'confirmed', confirmedAt: Timestamp.now() })
   await db.doc('salesQuotes/rfq/items/item').set({ ...source, confirmedAt: Timestamp.now() })
   vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Unexpected HTTP request') }))
@@ -97,7 +98,7 @@ describe('freee quotation transaction and authorization integration', () => {
     expect(fetch).not.toHaveBeenCalled()
     expect((await ref().get()).get('status')).toBe('failed')
     const next = await save(1)
-    expect(next.payload.lines[0].description).toBe('A-1 Bolt')
+    expect(next.payload.lines[0].description).toBe('ACME A-1 Bolt')
     expect((await ref().collection('revisions').doc('1').get()).get('payload.lines')[0].description).toBe('A-1\nBolt')
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(successfulResponse(next)))))
     expect((await send(next)).status).toBe('sent')
@@ -175,7 +176,7 @@ describe('P3-005 multiple translated lines', () => {
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as FreeeQuotePayload
       expect(body.lines).toEqual([
-        { type: 'item', description: 'A-1 Hex bolt Stainless steel', quantity: 2, unit: 'pcs', unit_price: '100', tax_rate: 10, reduced_tax_rate: false, withholding: false },
+        { type: 'item', description: 'ACME A-1 Hex bolt Stainless steel', quantity: 2, unit: 'pcs', unit_price: '100', tax_rate: 10, reduced_tax_rate: false, withholding: false },
         { type: 'item', description: '0002-Ω Washer Ø10 For M10 bolt', quantity: 1.5, unit: 'pcs', unit_price: '80', tax_rate: 8, reduced_tax_rate: false, withholding: false },
       ])
       return new Response(JSON.stringify({ quotation: { ...successfulResponse(saved).quotation, total_amount: 349, amount_tax: 29 } }))

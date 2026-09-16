@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { salesQuoteSettingsEqual } from './salesQuoteSettingsEqual'
 import type { QuoteSettings } from '../../../functions/src/salesQuoteModel'
-const settings: QuoteSettings = { partnerId: '110368088', quotationDate: '2026-09-14', expirationDate: '2026-10-14', subject: 'APIテスト', quotationNumber: '', partnerTitle: '御中', taxEntryMethod: 'out', taxFraction: 'omit', lineAmountFraction: 'omit', note: '', translationsReviewed: true, prices: [{ rfqItemId: 'a', unitPrice: '10000', taxRate: 10, reducedTaxRate: false }, { rfqItemId: 'b', unitPrice: '80', taxRate: 8, reducedTaxRate: false }] }
+const settings: QuoteSettings = { partnerId: '110368088', quotationDate: '2026-09-14', expirationDate: '2026-10-14', subject: 'APIテスト', quotationNumber: '', partnerTitle: '御中', taxEntryMethod: 'out', taxFraction: 'omit', lineAmountFraction: 'omit', note: '', translationsReviewed: true, prices: [{ rfqItemId: 'a', purchaseAmount: '', shippingFee: '', margin: '1.2', unitPrice: '10000', taxRate: 10, reducedTaxRate: false }, { rfqItemId: 'b', purchaseAmount: '', shippingFee: '', margin: '1.2', unitPrice: '80', taxRate: 8, reducedTaxRate: false }] }
 describe('sales quote saved change detection', () => {
   it('ignores Firestore key ordering and price row ordering without mutating input', () => {
     const reordered = Object.fromEntries(Object.entries(settings).reverse()) as unknown as QuoteSettings
@@ -15,6 +15,7 @@ describe('sales quote saved change detection', () => {
   it('still detects header, partner, review, price and line changes', () => {
     for (const change of [{ subject: '変更' }, { partnerId: '2' }, { translationsReviewed: false }, { taxFraction: 'round' as const }, { note: '備考' }, { expirationDate: '' }]) expect(salesQuoteSettingsEqual({ ...settings, ...change }, settings)).toBe(false)
     expect(salesQuoteSettingsEqual({ ...settings, prices: [{ ...settings.prices[0], unitPrice: '9999' }, settings.prices[1]] }, settings)).toBe(false)
+    expect(salesQuoteSettingsEqual({ ...settings, prices: [{ ...settings.prices[0], margin: '1.3' }, settings.prices[1]] }, settings)).toBe(false)
     expect(salesQuoteSettingsEqual({ ...settings, prices: [settings.prices[0]] }, settings)).toBe(false)
   })
   it('treats invalid unsaved input as changed', () => {

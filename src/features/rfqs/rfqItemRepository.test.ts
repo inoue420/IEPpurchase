@@ -9,7 +9,7 @@ vi.mock('firebase/firestore', async importOriginal => ({
   serverTimestamp: () => 'server-time',
 }))
 import { appendRfqItemEcPurchaseCandidates, createRfqItem, saveRfqItemTranslation, setRfqItemArchived, setRfqItemSourcingTargets, updateRfqItem } from './rfqItemRepository'
-const input = { originalDescription: ' Bolt ', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 2, unit: '個', supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: '2026-09-08', status: 'pending' as const, note: '' }
+const input = { originalDescription: ' Bolt ', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 2, supplierResponseUnitPrice: null, unit: '個', supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: '2026-09-08', status: 'pending' as const, note: '' }
 describe('RFQ品目保存', () => {
   beforeEach(() => vi.clearAllMocks())
   it('翻訳は指定品目の訳文のみ更新する', async () => {

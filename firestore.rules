@@ -144,7 +144,7 @@ service cloud.firestore {
       }
       function validItem(d) {
         return d.keys().hasAll(['lineNo', 'originalDescription', 'translatedDescription', 'productId', 'manufacturerId', 'manufacturerName', 'partNumber', 'productName', 'quantity', 'unit', 'requestedDeliveryDate', 'status', 'note', 'createdAt', 'updatedAt', 'archivedAt'])
-          && d.keys().hasOnly(['lineNo', 'originalDescription', 'translatedDescription', 'productId', 'manufacturerId', 'manufacturerName', 'partNumber', 'productName', 'quantity', 'unit', 'supplierQuoteRequestEnabled', 'marketplaceOfferEnabled', 'ecPurchaseCandidates', 'requestedDeliveryDate', 'status', 'note', 'createdAt', 'updatedAt', 'archivedAt'])
+          && d.keys().hasOnly(['lineNo', 'originalDescription', 'translatedDescription', 'productId', 'manufacturerId', 'manufacturerName', 'partNumber', 'productName', 'quantity', 'supplierResponseUnitPrice', 'unit', 'supplierQuoteRequestEnabled', 'marketplaceOfferEnabled', 'ecPurchaseCandidates', 'requestedDeliveryDate', 'status', 'note', 'createdAt', 'updatedAt', 'archivedAt'])
           && d.lineNo is int && d.lineNo > 0
           && d.originalDescription is string && d.originalDescription.size() > 0 && d.originalDescription.size() <= 5000
           && d.translatedDescription is string && d.translatedDescription.size() <= 5000
@@ -154,6 +154,7 @@ service cloud.firestore {
           && d.partNumber is string && d.partNumber.size() <= 200
           && d.productName is string && d.productName.size() <= 500
           && d.quantity is number && d.quantity > 0 && d.quantity <= 1000000000
+          && (!d.keys().hasAny(['supplierResponseUnitPrice']) || d.supplierResponseUnitPrice == null || (d.supplierResponseUnitPrice is int && d.supplierResponseUnitPrice >= 0 && d.supplierResponseUnitPrice <= 1000000000))
           && d.unit is string && d.unit.size() > 0 && d.unit.size() <= 50
           && (!d.keys().hasAny(['supplierQuoteRequestEnabled']) || d.supplierQuoteRequestEnabled is bool)
           && (!d.keys().hasAny(['marketplaceOfferEnabled']) || d.marketplaceOfferEnabled is bool)
@@ -211,12 +212,16 @@ service cloud.firestore {
           && d.status in ['draft', 'confirmed'] && d.createdAt is timestamp && d.updatedAt == request.time
           && ((d.status == 'draft' && d.confirmedAt == null) || (d.status == 'confirmed' && d.confirmedAt == request.time));
       }
+      function salesQuoteTranslationEditable() {
+        return !exists(/databases/$(database)/documents/salesQuotes/$(rfqId)/freeeExports/current);
+      }
       allow get, list: if isSignedIn();
       allow create: if isSignedIn() && validSalesQuote(request.resource.data)
         && request.resource.data.status == 'draft' && request.resource.data.createdAt == request.time;
       allow update: if isSignedIn() && validSalesQuote(request.resource.data)
-        && resource.data.status == 'draft' && request.resource.data.status == 'confirmed'
-        && request.resource.data.createdAt == resource.data.createdAt;
+        && request.resource.data.createdAt == resource.data.createdAt
+        && ((resource.data.status == 'draft' && request.resource.data.status in ['draft', 'confirmed'])
+          || (resource.data.status == 'confirmed' && request.resource.data.status == 'draft' && salesQuoteTranslationEditable()));
       allow delete: if false;
 
       match /items/{itemId} {
@@ -237,11 +242,23 @@ service cloud.firestore {
           && getAfter(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft';
         allow update: if isSignedIn() && validSalesQuoteItem(request.resource.data)
           && request.resource.data.createdAt == resource.data.createdAt
-          && get(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft'
-          && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['outputDescription', 'updatedAt']) && request.resource.data.confirmedAt == null)
-            || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['confirmedAt', 'updatedAt']) && request.resource.data.confirmedAt == request.time
-              && getAfter(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'confirmed'));
-        allow delete: if false;
+          && ((get(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft'
+              && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['outputDescription', 'updatedAt']) && request.resource.data.confirmedAt == null)
+                || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['confirmedAt', 'updatedAt']) && request.resource.data.confirmedAt == request.time
+                  && getAfter(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'confirmed')
+                || (getAfter(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft'
+                  && request.resource.data.confirmedAt == null
+                  && request.resource.data.outputDescription == get(/databases/$(database)/documents/rfqs/$(rfqId)/items/$(itemId)).data.translatedDescription)))
+            || (get(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'confirmed'
+              && getAfter(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft'
+              && salesQuoteTranslationEditable()
+              && request.resource.data.confirmedAt == null
+              && (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['confirmedAt', 'updatedAt'])
+                || request.resource.data.outputDescription == get(/databases/$(database)/documents/rfqs/$(rfqId)/items/$(itemId)).data.translatedDescription)));
+        allow delete: if isSignedIn() && salesQuoteTranslationEditable()
+          && getAfter(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft'
+          && (get(/databases/$(database)/documents/rfqs/$(rfqId)/items/$(itemId)).data.archivedAt != null
+            || get(/databases/$(database)/documents/rfqs/$(rfqId)/items/$(itemId)).data.status == 'cancelled');
       }
     }
     match /supplierQuoteRequests/{requestId} {

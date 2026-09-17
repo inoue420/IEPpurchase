@@ -27,8 +27,17 @@ exports.getFreeeConnectionStatus = (0, https_1.onCall)({ region: REGION, invoker
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'ログインが必要です。');
     try {
-        const value = JSON.parse(freeeOAuthTokens.value());
-        return { connected: typeof value.accessToken === 'string' && typeof value.refreshToken === 'string' };
+        const [version] = await secretManager.accessSecretVersion({ name: `projects/${projectId()}/secrets/${freeeOAuthTokens.name}/versions/latest` });
+        const value = JSON.parse(Buffer.from(version.payload?.data).toString('utf8'));
+        const authorizedAt = typeof value.authorizedAt === 'string' ? Date.parse(value.authorizedAt) : Number.NaN;
+        const expiresIn = typeof value.expiresIn === 'number' ? value.expiresIn : Number.NaN;
+        const connected = typeof value.accessToken === 'string'
+            && typeof value.refreshToken === 'string'
+            && Number.isFinite(authorizedAt)
+            && Number.isFinite(expiresIn)
+            && expiresIn > 0
+            && authorizedAt + expiresIn * 1000 > Date.now();
+        return { connected };
     }
     catch {
         return { connected: false };

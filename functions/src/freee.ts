@@ -15,7 +15,7 @@ const secretManager = new SecretManagerServiceClient()
 const db = getFirestore()
 
 interface TokenResponse { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown; company_id?: unknown; scope?: unknown }
-interface StoredTokens { accessToken?: unknown; refreshToken?: unknown }
+interface StoredTokens { accessToken?: unknown; refreshToken?: unknown; authorizedAt?: unknown; expiresIn?: unknown }
 function projectId(): string { const value = process.env.GCLOUD_PROJECT ?? process.env.GCP_PROJECT; if (!value) throw new Error('Firebase project IDを解決できません。'); return value }
 function callbackUrl(): string { return `https://${REGION}-${projectId()}.cloudfunctions.net/freeeOAuthCallback` }
 function stateDocumentId(state: string): string { return createHash('sha256').update(state).digest('hex') }
@@ -27,8 +27,17 @@ function page(response: import('express').Response, status: number, title: strin
 export const getFreeeConnectionStatus = onCall({ region: REGION, invoker: 'public', secrets: [freeeOAuthTokens] }, async request => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
   try {
-    const value = JSON.parse(freeeOAuthTokens.value()) as StoredTokens
-    return { connected: typeof value.accessToken === 'string' && typeof value.refreshToken === 'string' }
+    const [version] = await secretManager.accessSecretVersion({ name: `projects/${projectId()}/secrets/${freeeOAuthTokens.name}/versions/latest` })
+    const value = JSON.parse(Buffer.from(version.payload?.data as Uint8Array).toString('utf8')) as StoredTokens
+    const authorizedAt = typeof value.authorizedAt === 'string' ? Date.parse(value.authorizedAt) : Number.NaN
+    const expiresIn = typeof value.expiresIn === 'number' ? value.expiresIn : Number.NaN
+    const connected = typeof value.accessToken === 'string'
+      && typeof value.refreshToken === 'string'
+      && Number.isFinite(authorizedAt)
+      && Number.isFinite(expiresIn)
+      && expiresIn > 0
+      && authorizedAt + expiresIn * 1000 > Date.now()
+    return { connected }
   } catch {
     return { connected: false }
   }

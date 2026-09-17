@@ -15,14 +15,24 @@ const secretManager = new SecretManagerServiceClient()
 const db = getFirestore()
 
 interface TokenResponse { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown; company_id?: unknown; scope?: unknown }
+interface StoredTokens { accessToken?: unknown; refreshToken?: unknown }
 function projectId(): string { const value = process.env.GCLOUD_PROJECT ?? process.env.GCP_PROJECT; if (!value) throw new Error('Firebase project IDを解決できません。'); return value }
 function callbackUrl(): string { return `https://${REGION}-${projectId()}.cloudfunctions.net/freeeOAuthCallback` }
 function stateDocumentId(state: string): string { return createHash('sha256').update(state).digest('hex') }
 function codeDiagnostics(code: string): { length: number; hasWhitespace: boolean; fingerprint: string } {
   return { length: code.length, hasWhitespace: /\s/.test(code), fingerprint: createHash('sha256').update(code).digest('hex').slice(0, 12) }
 }
-function page(response: import('express').Response, status: number, title: string, message: string): void { response.status(status).type('html').send(`<!doctype html><html lang="ja"><meta charset="utf-8"><title>${title}</title><body><h1>${title}</h1><p>${message}</p><p>この画面は閉じてIEPpurchaseへ戻れます。</p></body></html>`) }
+function page(response: import('express').Response, status: number, title: string, message: string): void { response.status(status).type('html').send(`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body><h1>${title}</h1><p>${message}</p><p><a href="https://ieppurchase.web.app/">IEPpurchaseのトップページへ戻る</a></p></body></html>`) }
 
+export const getFreeeConnectionStatus = onCall({ region: REGION, invoker: 'public', secrets: [freeeOAuthTokens] }, async request => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
+  try {
+    const value = JSON.parse(freeeOAuthTokens.value()) as StoredTokens
+    return { connected: typeof value.accessToken === 'string' && typeof value.refreshToken === 'string' }
+  } catch {
+    return { connected: false }
+  }
+})
 export const beginFreeeOAuth = onCall({ region: REGION, invoker: 'public', secrets: [freeeClientId] }, async request => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
   const clientId = freeeClientId.value()

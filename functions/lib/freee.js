@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.freeeOAuthCallbackUrl = exports.freeeOAuthCallback = exports.beginFreeeOAuth = void 0;
+exports.freeeOAuthCallbackUrl = exports.freeeOAuthCallback = exports.beginFreeeOAuth = exports.getFreeeConnectionStatus = void 0;
 const node_crypto_1 = require("node:crypto");
 const secret_manager_1 = require("@google-cloud/secret-manager");
 const firestore_1 = require("firebase-admin/firestore");
@@ -22,7 +22,18 @@ function stateDocumentId(state) { return (0, node_crypto_1.createHash)('sha256')
 function codeDiagnostics(code) {
     return { length: code.length, hasWhitespace: /\s/.test(code), fingerprint: (0, node_crypto_1.createHash)('sha256').update(code).digest('hex').slice(0, 12) };
 }
-function page(response, status, title, message) { response.status(status).type('html').send(`<!doctype html><html lang="ja"><meta charset="utf-8"><title>${title}</title><body><h1>${title}</h1><p>${message}</p><p>この画面は閉じてIEPpurchaseへ戻れます。</p></body></html>`); }
+function page(response, status, title, message) { response.status(status).type('html').send(`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body><h1>${title}</h1><p>${message}</p><p><a href="https://ieppurchase.web.app/">IEPpurchaseのトップページへ戻る</a></p></body></html>`); }
+exports.getFreeeConnectionStatus = (0, https_1.onCall)({ region: REGION, invoker: 'public', secrets: [freeeOAuthTokens] }, async (request) => {
+    if (!request.auth)
+        throw new https_1.HttpsError('unauthenticated', 'ログインが必要です。');
+    try {
+        const value = JSON.parse(freeeOAuthTokens.value());
+        return { connected: typeof value.accessToken === 'string' && typeof value.refreshToken === 'string' };
+    }
+    catch {
+        return { connected: false };
+    }
+});
 exports.beginFreeeOAuth = (0, https_1.onCall)({ region: REGION, invoker: 'public', secrets: [freeeClientId] }, async (request) => {
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'ログインが必要です。');

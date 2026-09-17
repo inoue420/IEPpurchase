@@ -126,5 +126,5 @@ export const cancelSourcingDecision = onCall({ region: 'asia-northeast1', invoke
 
 export { searchRakutenItems } from './rakuten'
 export { translateGoogleText, translateAzureText } from './translation'
-export { beginFreeeOAuth, freeeOAuthCallback } from './freee'
+export { beginFreeeOAuth, freeeOAuthCallback, getFreeeConnectionStatus } from './freee'
 export { saveSalesQuotePricing, sendFreeeQuotation, reconcileFreeeQuotation, searchFreeePartners } from './freeeQuotation'

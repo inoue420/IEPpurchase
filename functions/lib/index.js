@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.searchFreeePartners = exports.reconcileFreeeQuotation = exports.sendFreeeQuotation = exports.saveSalesQuotePricing = exports.freeeOAuthCallback = exports.beginFreeeOAuth = exports.translateAzureText = exports.translateGoogleText = exports.searchRakutenItems = exports.cancelSourcingDecision = exports.selectSourcingCandidate = void 0;
+exports.searchFreeePartners = exports.reconcileFreeeQuotation = exports.sendFreeeQuotation = exports.saveSalesQuotePricing = exports.getFreeeConnectionStatus = exports.freeeOAuthCallback = exports.beginFreeeOAuth = exports.translateAzureText = exports.translateGoogleText = exports.searchRakutenItems = exports.cancelSourcingDecision = exports.selectSourcingCandidate = void 0;
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
 const https_1 = require("firebase-functions/v2/https");
@@ -117,6 +117,7 @@ Object.defineProperty(exports, "translateAzureText", { enumerable: true, get: fu
 var freee_1 = require("./freee");
 Object.defineProperty(exports, "beginFreeeOAuth", { enumerable: true, get: function () { return freee_1.beginFreeeOAuth; } });
 Object.defineProperty(exports, "freeeOAuthCallback", { enumerable: true, get: function () { return freee_1.freeeOAuthCallback; } });
+Object.defineProperty(exports, "getFreeeConnectionStatus", { enumerable: true, get: function () { return freee_1.getFreeeConnectionStatus; } });
 var freeeQuotation_1 = require("./freeeQuotation");
 Object.defineProperty(exports, "saveSalesQuotePricing", { enumerable: true, get: function () { return freeeQuotation_1.saveSalesQuotePricing; } });
 Object.defineProperty(exports, "sendFreeeQuotation", { enumerable: true, get: function () { return freeeQuotation_1.sendFreeeQuotation; } });

@@ -275,6 +275,12 @@ describe('RFQ items', () => {
     await assertSucceeds(updateDoc(ref, { status: 'cancelled', updatedAt: serverTimestamp() }))
     await assertFails(updateDoc(ref, { archivedAt: serverTimestamp(), updatedAt: serverTimestamp() }))
   })
+  it('allows up to 10 EC purchase candidates and rejects an 11th', async () => {
+    const ref = doc(dbFor('member'), 'rfqs/existing/items/existing')
+    const candidate = (index: number) => ({ storeProductName: `商品 ${index}`, url: `https://example.test/items/${index}`, price: index, purchasePlanned: false })
+    await assertSucceeds(updateDoc(ref, { ecPurchaseCandidates: Array.from({ length: 10 }, (_, index) => candidate(index)), updatedAt: serverTimestamp() }))
+    await assertFails(updateDoc(ref, { ecPurchaseCandidates: Array.from({ length: 11 }, (_, index) => candidate(index)), updatedAt: serverTimestamp() }))
+  })
   it('rejects orphan items, counter jumps and standalone allocations', async () => {
     await assertFails(createItem('missing', 1))
     await assertFails(createItem('existing', 3))

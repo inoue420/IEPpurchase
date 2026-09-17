@@ -12,7 +12,7 @@ const asNumber = (value: unknown): number => typeof value === 'number' && Number
 const asTimestamp = (value: unknown): Timestamp | null => value instanceof Timestamp ? value : null
 function readEcPurchaseCandidates(value: unknown): EcPurchaseCandidate[] {
   if (!Array.isArray(value)) return []
-  return value.slice(0, 5).flatMap(candidate => {
+  return value.slice(0, 10).flatMap(candidate => {
     if (candidate === null || typeof candidate !== 'object') return []
     const data = candidate as Record<string, unknown>
     const price = asNumber(data.price)
@@ -65,14 +65,14 @@ export async function setRfqItemSupplierResponseUnitPrices(rfqId: string, update
   await batch.commit()
 }
 export async function appendRfqItemEcPurchaseCandidates(rfqId: string, itemId: string, candidates: EcPurchaseCandidate[]): Promise<number> {
-  const parsed = ecPurchaseCandidateSchema.array().max(5).parse(candidates)
+  const parsed = ecPurchaseCandidateSchema.array().max(10).parse(candidates)
   const itemRef = doc(firestore, 'rfqs', rfqId, 'items', itemId)
   return runTransaction(firestore, async transaction => {
     const current = await transaction.get(itemRef)
     if (!current.exists() || current.data().archivedAt != null || current.data().status === 'cancelled') throw new Error('品目が変更または削除されています。再読込してください。')
     const existing = readEcPurchaseCandidates(current.data().ecPurchaseCandidates)
-    const additions = parsed.filter(candidate => !existing.some(value => value.url === candidate.url)).slice(0, 5 - existing.length)
-    if (additions.length > 0) transaction.update(itemRef, { ecPurchaseCandidates: [...existing, ...additions], updatedAt: serverTimestamp() })
+    const additions = parsed.filter(candidate => !existing.some(value => value.url === candidate.url)).slice(0, 10 - existing.length)
+    if (additions.length > 0) transaction.update(itemRef, { ecPurchaseCandidates: [...existing, ...additions].sort((a, b) => a.price - b.price), updatedAt: serverTimestamp() })
     return additions.length
   })
 }export async function setRfqItemSourcingTargets(rfqId: string, itemId: string, supplierQuoteRequestEnabled: boolean, marketplaceOfferEnabled: boolean): Promise<void> {

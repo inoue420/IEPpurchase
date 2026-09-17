@@ -60,10 +60,10 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
     try {
       for (const [index, item] of targets.entries()) {
         setBulkProgress(`${index + 1}/${targets.length}: 明細No. ${item.lineNo} を楽天検索中…`)
-        if (!item.manufacturerName.trim() || !item.partNumber.trim() || item.ecPurchaseCandidates.length >= 5) { skipped += 1; continue }
+        if (!item.manufacturerName.trim() || !item.partNumber.trim() || item.ecPurchaseCandidates.length >= 10) { skipped += 1; continue }
         try {
           const result = await searchRakutenItems(`${item.manufacturerName.trim()} ${item.partNumber.trim()}`)
-          const matched = selectPartNumberMatchedRakutenItems(result.items, item.partNumber, 5 - item.ecPurchaseCandidates.length)
+          const matched = selectPartNumberMatchedRakutenItems(result.items, item.partNumber, 10 - item.ecPurchaseCandidates.length)
           if (matched.length === 0) { skipped += 1; continue }
           const added = await appendRfqItemEcPurchaseCandidates(rfqId, item.id, matched.map(value => ({ storeProductName: value.itemName, url: value.itemUrl, price: value.itemPrice, purchasePlanned: false })))
           if (added > 0) { addedItems += 1; addedCandidates += added } else skipped += 1

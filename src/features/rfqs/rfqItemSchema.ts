@@ -23,7 +23,7 @@ export const rfqItemSchema = z.object({
   supplierResponseUnitPrice: z.union([z.null(), z.coerce.number().int('仕入先回答単価は整数で入力してください。').min(0, '仕入先回答単価は0円以上で入力してください。').max(1_000_000_000, '仕入先回答単価が大きすぎます。')]),
   unit: z.string().trim().min(1, '単位を入力してください。').max(50, '単位は50文字以内で入力してください。'),
   supplierQuoteRequestEnabled: z.boolean(), marketplaceOfferEnabled: z.boolean(),
-  ecPurchaseCandidates: z.array(ecPurchaseCandidateSchema).max(5, 'EC購入候補は5件まで登録できます。'),
+  ecPurchaseCandidates: z.array(ecPurchaseCandidateSchema).max(10, 'EC購入候補は10件まで登録できます。'),
   requestedDeliveryDate: z.union([z.literal(''), z.iso.date()]), status: z.enum(RFQ_ITEM_STATUSES), note: z.string().trim().max(5000, '備考は5000文字以内で入力してください。'),
 }).refine(value => value.supplierQuoteRequestEnabled || value.marketplaceOfferEnabled, { message: '対応先を1つ以上選択してください。', path: ['supplierQuoteRequestEnabled'] })
 

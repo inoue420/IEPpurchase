@@ -2,9 +2,10 @@
 - Google Cloud VisionのDOCUMENT_TEXT_DETECTIONを利用し、10MB以下の画像とPDF先頭5ページから文字・平均信頼度を取得する。
 - OCRダイアログの貼り付け枠へスクリーンショットをCtrl+Vで貼り付け、そのままOCR対象にできる。ファイル選択も従来どおり利用可能。
 - Visionの単語座標を行ごとにまとめ、メーカー・製品名／詳細・品番・数量・単位の見出し位置から列境界を復元する。行番号列を除外し、単位列がない場合は「個」、品名中の英数字型番は品番候補として補完する。
+- 中央寄せ見出しによってメーカー欄へ製品名が混入する事象を、複数データ行の大きな横方向の空白位置から列境界を補正する方式で修正。
 - OCR抽出文から最大50件の品目候補を作成。メーカー名・品番・品目説明・数量・単位を修正し、選択行だけを既存の一括登録トランザクションで保存する。自動確定は行わない。
 - ファイルは利用者が「OCRして候補を作成」を実行した時だけGoogle Cloud Visionへ送信し、この画面からファイル本体は保存しない。APIキーはGOOGLE_CLOUD_VISION_API_KEYとしてSecret Managerに保存。
-- typecheck、lint、production build、フロントエンド単体140件、Functions 13件成功。extractVisionOcrTextとHostingを2026-09-18に本番反映済み。公開先: https://ieppurchase.web.app 。
+- typecheck、lint、production build、フロントエンド単体140件、Functions 14件成功。extractVisionOcrTextとHostingを2026-09-18に本番反映済み。公開先: https://ieppurchase.web.app 。
 - 動作確認手順: docs/IEP-P6-004.md。
 
 ## IEP-P3-006 RFQ品目の一括手入力（2026-09-18・完了／ユーザー確認OK）

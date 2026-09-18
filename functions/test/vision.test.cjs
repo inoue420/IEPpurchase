@@ -40,3 +40,13 @@ test('uses word coordinates to restore table rows and columns', () => {
   ] }] }] }] }
   assert.equal(layoutVisionText(annotation), 'メーカー名\t詳細\t数量\nスプレノン\t網 大型 青\t1\nMAKITA\tTD173DZ 充電式ドライバー\t2')
 })
+
+test('infers column boundaries from repeated data gaps when centered headers are misleading', () => {
+  const annotation = { pages: [{ width: 520, blocks: [{ paragraphs: [{ words: [
+    word('メーカー', 60, 10, 125, 25), word('製品名', 275, 10, 335, 25), word('数量', 470, 10, 505, 25),
+    word('1', 20, 40, 28, 55), word('スプレノン', 48, 40, 112, 55), word('網大型青', 145, 40, 205, 55), word('1', 480, 40, 488, 55),
+    word('2', 20, 70, 28, 85), word('MAKITA', 48, 70, 108, 85), word('TD173DZ', 145, 70, 210, 85), word('充電式ドライバー', 215, 70, 345, 85), word('2', 480, 70, 488, 85),
+    word('3', 20, 100, 28, 115), word('Hanchen', 48, 100, 115, 115), word('電動ロータリー', 145, 100, 260, 115), word('1', 480, 100, 488, 115),
+  ] }] }] }] }
+  assert.equal(layoutVisionText(annotation), 'メーカー名\t詳細\t数量\nスプレノン\t網大型青\t1\nMAKITA\tTD173DZ 充電式ドライバー\t2\nHanchen\t電動ロータリー\t1')
+})

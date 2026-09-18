@@ -76,9 +76,25 @@ function pageLayoutText(value) {
         return '';
     const pageWidth = numberValue(page.width) ?? Math.max(...words.map(word => word.right));
     const firstAcceptedX = headerColumns[0].left - Math.max(8, Math.min(pageWidth * 0.02, headerColumns[0].width));
-    const boundaries = headerColumns.slice(0, -1).map((column, index) => (column.centerX + headerColumns[index + 1].centerX) / 2);
+    const dataRows = rows.slice(headerIndex + 1);
+    const boundaries = headerColumns.slice(0, -1).map((column, index) => {
+        const next = headerColumns[index + 1];
+        const candidates = dataRows.flatMap(row => {
+            const pairs = row.words.slice(0, -1).map((word, wordIndex) => {
+                const following = row.words[wordIndex + 1];
+                return { midpoint: (word.right + following.left) / 2, gap: following.left - word.right, height: Math.max(word.height, following.height) };
+            }).filter(pair => pair.midpoint > column.centerX && pair.midpoint < next.centerX && pair.gap >= Math.max(6, pair.height * 0.65));
+            if (pairs.length === 0)
+                return [];
+            return [pairs.reduce((largest, pair) => pair.gap > largest.gap ? pair : largest).midpoint];
+        }).sort((a, b) => a - b);
+        if (candidates.length === 0)
+            return (column.centerX + next.centerX) / 2;
+        const middle = Math.floor(candidates.length / 2);
+        return candidates.length % 2 ? candidates[middle] : (candidates[middle - 1] + candidates[middle]) / 2;
+    });
     const lines = [headerColumns.map(column => columnLabels[column.key]).join('\t')];
-    for (const row of rows.slice(headerIndex + 1)) {
+    for (const row of dataRows) {
         const cells = headerColumns.map(() => []);
         for (const word of row.words) {
             if (word.centerX < firstAcceptedX)

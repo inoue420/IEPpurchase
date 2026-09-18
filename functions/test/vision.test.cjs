@@ -6,6 +6,25 @@ const word = (text, left, top, right, bottom) => ({
   boundingBox: { vertices: [{ x: left, y: top }, { x: right, y: top }, { x: right, y: bottom }, { x: left, y: bottom }] },
 })
 
+test('reassembles split Japanese headers and keeps product text out of manufacturer', () => {
+  const annotation = { pages: [{ width: 500, blocks: [{ paragraphs: [{ words: [
+    word('メーカー', 60, 10, 105, 24),
+    word('製', 270, 10, 281, 24), word('品', 282, 10, 293, 24), word('名', 294, 10, 305, 24),
+    word('数', 464, 10, 475, 24), word('量', 476, 10, 487, 24),
+    word('7', 20, 40, 27, 54), word('MAKITA', 40, 40, 90, 54),
+    word('充電式ドライバー', 138, 40, 290, 54), word('TD173DZ', 306, 40, 369, 54), word('1', 469, 40, 477, 54),
+  ] }] }] }] }
+  assert.equal(layoutVisionText(annotation), 'メーカー名\t詳細\t数量\nMAKITA\t充電式ドライバー TD173DZ\t1')
+})
+
+test('does not construct a misleading two-column table when product header is missing', () => {
+  const annotation = { pages: [{ width: 500, blocks: [{ paragraphs: [{ words: [
+    word('メーカー', 60, 10, 105, 24), word('数量', 464, 10, 487, 24),
+    word('MAKITA', 40, 40, 90, 54), word('TD173DZ', 138, 40, 205, 54), word('1', 469, 40, 477, 54),
+  ] }] }] }] }
+  assert.equal(layoutVisionText(annotation), '')
+})
+
 test('rejects unauthenticated OCR calls', async () => {
   await assert.rejects(extractVisionOcrText.run({ data: {} }), { code: 'unauthenticated' })
 })

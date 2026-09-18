@@ -40,6 +40,27 @@ function columnKey(value: string): ColumnKey | null {
   return null
 }
 
+function detectColumns(words: PositionedWord[]) {
+  const columns: { key: ColumnKey; centerX: number; left: number; width: number }[] = []
+  for (let start = 0; start < words.length; start++) {
+    let text = ''
+    let match: { key: ColumnKey; end: number } | null = null
+    for (let end = start; end < Math.min(words.length, start + 8); end++) {
+      if (end > start && words[end].left - words[end - 1].right > Math.max(words[end].height, words[end - 1].height) * 1.5) break
+      text += words[end].text
+      const key = columnKey(text)
+      if (key) match = { key, end }
+    }
+    if (match) {
+      const left = words[start].left; const right = words[match.end].right
+      const key = match.key
+      if (!columns.some(column => column.key === key)) columns.push({ key, centerX: (left + right) / 2, left, width: right - left })
+      start = match.end
+    }
+  }
+  return columns
+}
+
 function pageLayoutText(value: unknown): string {
   const page = record(value)
   const words = list(page.blocks).flatMap(block => list(record(block).paragraphs))
@@ -57,12 +78,10 @@ function pageLayoutText(value: unknown): string {
     } else rows.push({ centerY: word.centerY, height: word.height, words: [word] })
   }
   rows.sort((a, b) => a.centerY - b.centerY).forEach(row => row.words.sort((a, b) => a.left - b.left))
-  const headerIndex = rows.findIndex(row => row.words.map(word => ({ word, key: columnKey(word.text) })).filter(value => value.key).length >= 2)
+  const detected = rows.map(row => detectColumns(row.words))
+  const headerIndex = detected.findIndex(columns => columns.some(column => column.key === 'originalDescription') && columns.some(column => column.key === 'quantity'))
   if (headerIndex < 0) return ''
-  const headerColumns = rows[headerIndex].words.flatMap(word => {
-    const key = columnKey(word.text)
-    return key ? [{ key, centerX: word.centerX, left: word.left, width: word.right - word.left }] : []
-  }).filter((column, index, values) => values.findIndex(value => value.key === column.key) === index).sort((a, b) => a.centerX - b.centerX)
+  const headerColumns = detected[headerIndex]
   if (headerColumns.length < 2) return ''
   const pageWidth = numberValue(page.width) ?? Math.max(...words.map(word => word.right))
   const firstAcceptedX = headerColumns[0].left - Math.max(8, Math.min(pageWidth * 0.02, headerColumns[0].width))

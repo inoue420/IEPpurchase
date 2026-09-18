@@ -16,4 +16,12 @@ describe('Vision OCR品目候補', () => {
   it('候補は50件までに制限する', () => {
     expect(parseVisionOcrItems(Array.from({ length: 60 }, (_, index) => `ITEM-${index + 1}`).join('\n'))).toHaveLength(50)
   })
+
+  it('座標復元された表で単位を補完し、品名内の型番を候補化する', () => {
+    const rows = parseVisionOcrItems('メーカー名\t詳細\t数量\nスプレノン\t網 大型 青\t1\nMAKITA\tTD173DZ 充電式ドライバー\t2')
+    expect(rows).toMatchObject([
+      { error: null, input: { manufacturerName: 'スプレノン', originalDescription: '網 大型 青', partNumber: '', quantity: 1, unit: '個' } },
+      { error: null, input: { manufacturerName: 'MAKITA', originalDescription: 'TD173DZ 充電式ドライバー', partNumber: 'TD173DZ', quantity: 2, unit: '個' } },
+    ])
+  })
 })

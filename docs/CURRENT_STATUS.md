@@ -1,3 +1,10 @@
+## IEP-P6-004 画像・スキャン表のOCR品目候補化（2026-09-18・ユーザー確認待ち）
+- Google Cloud VisionのDOCUMENT_TEXT_DETECTIONを利用し、10MB以下の画像とPDF先頭5ページから文字・平均信頼度を取得する。
+- OCR抽出文から最大50件の品目候補を作成。メーカー名・品番・品目説明・数量・単位を修正し、選択行だけを既存の一括登録トランザクションで保存する。自動確定は行わない。
+- ファイルは利用者が「OCRして候補を作成」を実行した時だけGoogle Cloud Visionへ送信し、この画面からファイル本体は保存しない。APIキーはGOOGLE_CLOUD_VISION_API_KEYとしてSecret Managerに保存。
+- typecheck、lint、production build、フロントエンド単体139件、Functions 12件成功。extractVisionOcrTextとHostingを2026-09-18に本番反映済み。公開先: https://ieppurchase.web.app 。
+- 動作確認手順: docs/IEP-P6-004.md。
+
 ## IEP-P3-006 RFQ品目の一括手入力（2026-09-18・完了／ユーザー確認OK）
 - RFQ品目一覧へ「表からまとめて追加」を追加。メール本文などからタブ・パイプ・カンマ区切りの見出し付き表を貼り付け、メーカー名・品番・商品名／詳細・数量・単位・備考を判定する。
 - 最大50件をプレビューし、各行を修正・選択して最終確認後に登録する。入力エラー行は選択不可とし、既存のRFQ品目入力制約を共通利用する。

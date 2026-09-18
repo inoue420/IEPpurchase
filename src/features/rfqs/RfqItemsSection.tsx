@@ -10,6 +10,7 @@ import { searchRakutenItems } from '../marketplaceOffers/rakutenSearch'
 import { selectPartNumberMatchedRakutenItems } from './rakutenCandidateSelection'
 import { SupplierQuotePdfImportDialog } from './SupplierQuotePdfImportDialog'
 import { BulkRfqItemDialog } from './BulkRfqItemDialog'
+import { VisionOcrImportDialog } from './VisionOcrImportDialog'
 
 export function RfqItemsSection({ rfqId }: { rfqId: string }) {
   const [items, setItems] = useState<RfqItem[]>([])
@@ -29,6 +30,7 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
   const [bulkProgress, setBulkProgress] = useState<string | null>(null)
   const [pdfImportOpen, setPdfImportOpen] = useState(false)
   const [bulkItemOpen, setBulkItemOpen] = useState(false)
+  const [visionOcrOpen, setVisionOcrOpen] = useState(false)
   const submitting = useRef(false)
   const bulkSearching = useRef(false)
   useEffect(() => subscribeRfqItems(rfqId, next => { setItems(next); setLoading(false); setLoadError(null) }, cause => { setLoadError(rfqError(cause)); setLoading(false) }), [rfqId, retry])
@@ -78,7 +80,7 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
   }
   const retryLoad = () => { setLoading(true); setRetry(value => value + 1) }
   return <Box sx={{ mt: 3 }}>
-    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1} sx={{ mb: 2 }}><Typography component="h2" variant="h5">品目</Typography><Stack direction="row" spacing={1}><Button variant="outlined" disabled={loading || Boolean(loadError) || busy} onClick={() => setBulkItemOpen(true)}>表からまとめて追加</Button><Button variant="contained" disabled={loading || Boolean(loadError)} onClick={() => setEditing(null)}>品目を追加</Button></Stack></Stack>
+    <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1} sx={{ mb: 2 }}><Typography component="h2" variant="h5">品目</Typography><Stack direction="row" spacing={1}><Button variant="outlined" disabled={loading || Boolean(loadError) || busy} onClick={() => setVisionOcrOpen(true)}>画像・PDFをOCR取込</Button><Button variant="outlined" disabled={loading || Boolean(loadError) || busy} onClick={() => setBulkItemOpen(true)}>表からまとめて追加</Button><Button variant="contained" disabled={loading || Boolean(loadError)} onClick={() => setEditing(null)}>品目を追加</Button></Stack></Stack>
     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} sx={{ mb: 2 }}><TextField label="品目を検索" fullWidth value={search} onChange={event => setSearch(event.target.value)} /><Button onClick={() => setShowArchived(value => !value)} variant={showArchived ? 'contained' : 'outlined'}>{showArchived ? '削除済みを表示中' : '削除済みを表示'}</Button></Stack>
     <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}><Button variant="outlined" disabled={loading || Boolean(loadError) || busy || !visible.some(item => !item.archivedAt && item.status !== 'cancelled' && item.marketplaceOfferEnabled)} onClick={() => void bulkRakutenSearch()}>{bulkProgress ?? '表示中のEC対象を楽天で検索'}</Button><Button variant="outlined" disabled={loading || Boolean(loadError) || busy || !items.some(item => !item.archivedAt && item.status !== 'cancelled' && item.partNumber.trim())} onClick={() => setPdfImportOpen(true)}>仕入先見積PDFを取り込む</Button><Typography variant="body2" color="text.secondary">EC対象は楽天を検索し、PDF取込はRFQ内の品番と一致した仕切単価を確認後に反映します。</Typography></Stack>
     {productError && <Alert severity="warning" action={<Button onClick={retryLoad}>再試行</Button>}>商品マスターを読み込めません。品目は手入力できます。</Alert>}
@@ -95,6 +97,7 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
     {editing !== undefined && <RfqItemDialog key={editing?.id ?? 'new'} rfqId={rfqId} item={editing} products={products} onClose={() => setEditing(undefined)} onSaved={message => { setEditing(undefined); setNotice(message) }} />}
     {pdfImportOpen && <SupplierQuotePdfImportDialog rfqId={rfqId} items={items} onClose={() => setPdfImportOpen(false)} onImported={count => { setPdfImportOpen(false); setNotice(`仕入先見積PDFから${count}品目の回答単価を反映しました。`) }} />}
     {bulkItemOpen && <BulkRfqItemDialog rfqId={rfqId} onClose={() => setBulkItemOpen(false)} onSaved={count => { setBulkItemOpen(false); setNotice(`${count}品目をまとめて登録しました。`) }} />}
+    {visionOcrOpen && <VisionOcrImportDialog rfqId={rfqId} onClose={() => setVisionOcrOpen(false)} onSaved={count => { setVisionOcrOpen(false); setNotice(`OCR候補から${count}品目を登録しました。`) }} />}
     <Dialog open={Boolean(confirming)} onClose={busy ? undefined : () => setConfirming(null)}><DialogTitle>品目を{confirming?.archivedAt ? '復元' : '削除'}</DialogTitle><DialogContent>{actionError && <Alert severity="error">{actionError}</Alert>}<DialogContentText>明細No. {confirming?.lineNo} を{confirming?.archivedAt ? '復元します。' : '削除します。登録情報は保持され、後から復元できます。'}</DialogContentText></DialogContent><DialogActions><Button disabled={busy} onClick={() => setConfirming(null)}>キャンセル</Button><Button disabled={busy} onClick={() => void archive()}>{busy ? '処理中…' : confirming?.archivedAt ? '復元' : '削除'}</Button></DialogActions></Dialog>
     <Snackbar open={Boolean(notice)} message={notice} autoHideDuration={4000} onClose={() => setNotice(null)} />
   </Box>

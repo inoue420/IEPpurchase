@@ -1,5 +1,6 @@
 ## IEP-P6-004 画像・スキャン表のOCR品目候補化（2026-09-18・ユーザー確認待ち）
 - Google Cloud VisionのDOCUMENT_TEXT_DETECTIONを利用し、10MB以下の画像とPDF先頭5ページから文字・平均信頼度を取得する。
+- OCRダイアログの貼り付け枠へスクリーンショットをCtrl+Vで貼り付け、そのままOCR対象にできる。ファイル選択も従来どおり利用可能。
 - OCR抽出文から最大50件の品目候補を作成。メーカー名・品番・品目説明・数量・単位を修正し、選択行だけを既存の一括登録トランザクションで保存する。自動確定は行わない。
 - ファイルは利用者が「OCRして候補を作成」を実行した時だけGoogle Cloud Visionへ送信し、この画面からファイル本体は保存しない。APIキーはGOOGLE_CLOUD_VISION_API_KEYとしてSecret Managerに保存。
 - typecheck、lint、production build、フロントエンド単体139件、Functions 12件成功。extractVisionOcrTextとHostingを2026-09-18に本番反映済み。公開先: https://ieppurchase.web.app 。

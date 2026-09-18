@@ -254,6 +254,13 @@ describe('RFQ items', () => {
     batch.set(doc(db, 'rfqs', parent, 'items', 'new'), { ...item(), lineNo })
     return batch.commit()
   }
+  function createItems(lineNos: number[]) {
+    const db = dbFor('member')
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'rfqs', 'existing', 'itemCounters', 'sequence'), { lastLineNo: Math.max(...lineNos), updatedAt: serverTimestamp() })
+    lineNos.forEach(lineNo => batch.set(doc(db, 'rfqs', 'existing', 'items', `new-${lineNo}`), { ...item(), lineNo }))
+    return batch.commit()
+  }
   it('supports allocation, edits, archive and restore', async () => {
     await assertSucceeds(createItem())
     const ref = doc(dbFor('member'), 'rfqs/existing/items/new')
@@ -261,6 +268,10 @@ describe('RFQ items', () => {
     await assertSucceeds(updateDoc(ref, { archivedAt: serverTimestamp(), updatedAt: serverTimestamp() }))
     await assertFails(updateDoc(ref, { quantity: 3, updatedAt: serverTimestamp() }))
     await assertSucceeds(updateDoc(ref, { archivedAt: null, updatedAt: serverTimestamp() }))
+  })
+  it('allows up to 50 new consecutive item numbers in one transaction', async () => {
+    await assertSucceeds(createItems([2, 3, 4]))
+    await assertFails(createItems([5, 56]))
   })
   it('locks quantity, unit and archive while a sourcing decision is active, but allows status changes', async () => {
     await env.withSecurityRulesDisabled(async context => {

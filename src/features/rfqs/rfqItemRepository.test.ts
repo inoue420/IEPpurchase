@@ -8,7 +8,7 @@ vi.mock('firebase/firestore', async importOriginal => ({
   runTransaction: (_db: unknown, work: (tx: typeof mock) => Promise<void>) => work(mock),
   serverTimestamp: () => 'server-time',
 }))
-import { appendRfqItemEcPurchaseCandidates, createRfqItem, saveRfqItemTranslation, setRfqItemArchived, setRfqItemSourcingTargets, updateRfqItem } from './rfqItemRepository'
+import { appendRfqItemEcPurchaseCandidates, createRfqItem, createRfqItems, saveRfqItemTranslation, setRfqItemArchived, setRfqItemSourcingTargets, updateRfqItem } from './rfqItemRepository'
 const input = { originalDescription: ' Bolt ', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 2, supplierResponseUnitPrice: null, unit: '個', supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: '2026-09-08', status: 'pending' as const, note: '' }
 describe('RFQ品目保存', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -35,6 +35,21 @@ describe('RFQ品目保存', () => {
     mock.get.mockResolvedValueOnce({ exists: () => true }).mockResolvedValueOnce({ exists: () => false })
     await createRfqItem('rfq-a', input)
     expect(mock.set).toHaveBeenCalledWith('rfqs/rfq-a/items/auto-id', expect.objectContaining({ lineNo: 1 }))
+  })
+  it('複数品目を連番で同一トランザクションに保存する', async () => {
+    mock.get.mockResolvedValueOnce({ exists: () => true }).mockResolvedValueOnce({ exists: () => true, data: () => ({ lastLineNo: 5 }) })
+    await createRfqItems('rfq-a', [input, { ...input, originalDescription: 'Nut' }])
+    expect(mock.set).toHaveBeenCalledWith('rfqs/rfq-a/itemCounters/sequence', { lastLineNo: 7, updatedAt: 'server-time' })
+    const itemPayloads = mock.set.mock.calls.slice(1).map(call => call[1])
+    expect(itemPayloads).toEqual([
+      expect.objectContaining({ lineNo: 6, originalDescription: 'Bolt' }),
+      expect.objectContaining({ lineNo: 7, originalDescription: 'Nut' }),
+    ])
+  })
+  it('一括登録は空配列と50件超を拒否する', async () => {
+    await expect(createRfqItems('rfq-a', [])).rejects.toThrow('1〜50件')
+    await expect(createRfqItems('rfq-a', Array.from({ length: 51 }, () => input))).rejects.toThrow('1〜50件')
+    expect(mock.set).not.toHaveBeenCalled()
   })
   it('親案件なし・不正入力では書き込まない', async () => {
     mock.get.mockResolvedValue({ exists: () => false })

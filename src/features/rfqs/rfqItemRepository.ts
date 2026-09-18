@@ -47,6 +47,22 @@ export async function createRfqItem(rfqId: string, input: RfqItemInput): Promise
     transaction.set(itemRef, { ...payload, lineNo, archivedAt: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })
   })
 }
+export async function createRfqItems(rfqId: string, inputs: RfqItemInput[]): Promise<void> {
+  if (inputs.length === 0 || inputs.length > 50) throw new Error('登録する品目を1〜50件選択してください。')
+  const payloads = inputs.map(toDocument)
+  const itemRefs = payloads.map(() => doc(itemCollection(rfqId)))
+  const counterRef = doc(firestore, 'rfqs', rfqId, 'itemCounters', 'sequence')
+  await runTransaction(firestore, async transaction => {
+    const parent = await transaction.get(doc(firestore, 'rfqs', rfqId))
+    const counter = await transaction.get(counterRef)
+    if (!parent.exists()) throw new Error('RFQ案件が見つかりません。')
+    const firstLineNo = counter.exists() ? asNumber(counter.data().lastLineNo) + 1 : 1
+    const lastLineNo = firstLineNo + payloads.length - 1
+    if (!Number.isSafeInteger(firstLineNo) || firstLineNo < 1 || !Number.isSafeInteger(lastLineNo)) throw new Error('品目番号が不正です。')
+    transaction.set(counterRef, { lastLineNo, updatedAt: serverTimestamp() })
+    payloads.forEach((payload, index) => transaction.set(itemRefs[index], { ...payload, lineNo: firstLineNo + index, archivedAt: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }))
+  })
+}
 export async function updateRfqItem(rfqId: string, itemId: string, input: RfqItemInput): Promise<void> {
   const payload = toDocument(input)
   const itemRef = doc(firestore, 'rfqs', rfqId, 'items', itemId)

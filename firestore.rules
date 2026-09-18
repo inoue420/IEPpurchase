@@ -119,9 +119,12 @@ service cloud.firestore {
           && d.updatedAt == request.time;
       }
       allow get: if isSignedIn();
-      allow create: if isSignedIn() && validCounter() && request.resource.data.lastLineNo == 1;
+      // A bulk RFQ-item entry reserves at most 50 consecutive line numbers.
+      allow create: if isSignedIn() && validCounter()
+        && request.resource.data.lastLineNo >= 1 && request.resource.data.lastLineNo <= 50;
       allow update: if isSignedIn() && validCounter()
-        && request.resource.data.lastLineNo == resource.data.lastLineNo + 1;
+        && request.resource.data.lastLineNo > resource.data.lastLineNo
+        && request.resource.data.lastLineNo <= resource.data.lastLineNo + 50;
       allow list, delete: if false;
     }
     match /rfqs/{rfqId}/items/{itemId} {
@@ -157,9 +160,9 @@ service cloud.firestore {
       function validNewLine() {
         let counterPath = /databases/$(database)/documents/rfqs/$(rfqId)/itemCounters/sequence;
         return getAfter(counterPath).data.updatedAt == request.time
-          && request.resource.data.lineNo == getAfter(counterPath).data.lastLineNo
-          && ((!exists(counterPath) && request.resource.data.lineNo == 1)
-            || (exists(counterPath) && request.resource.data.lineNo == get(counterPath).data.lastLineNo + 1));
+          && request.resource.data.lineNo <= getAfter(counterPath).data.lastLineNo
+          && ((!exists(counterPath) && request.resource.data.lineNo >= 1)
+            || (exists(counterPath) && request.resource.data.lineNo > get(counterPath).data.lastLineNo));
       }
       function preservesSourcingLockedFields() {
         let statePath = /databases/$(database)/documents/rfqs/$(rfqId)/sourcingStates/$(itemId);

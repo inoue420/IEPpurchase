@@ -1,6 +1,6 @@
 const { test } = require('node:test')
 const assert = require('node:assert/strict')
-const { extractVisionText, extractVisionOcrText, layoutVisionText } = require('../lib/vision.js')
+const { detectTableGrid, extractVisionText, extractVisionOcrText, layoutVisionText } = require('../lib/vision.js')
 const word = (text, left, top, right, bottom) => ({
   symbols: [...text].map(character => ({ text: character })),
   boundingBox: { vertices: [{ x: left, y: top }, { x: right, y: top }, { x: right, y: bottom }, { x: left, y: bottom }] },
@@ -68,4 +68,15 @@ test('infers column boundaries from repeated data gaps when centered headers are
     word('3', 20, 100, 28, 115), word('Hanchen', 48, 100, 115, 115), word('電動ロータリー', 145, 100, 260, 115), word('1', 480, 100, 488, 115),
   ] }] }] }] }
   assert.equal(layoutVisionText(annotation), 'メーカー名\t詳細\t数量\nスプレノン\t網大型青\t1\nMAKITA\tTD173DZ 充電式ドライバー\t2\nHanchen\t電動ロータリー\t1')
+})
+
+test('detects table ruling lines in an image and uses them as column boundaries', async () => {
+  const svg = Buffer.from('<svg width="500" height="120" xmlns="http://www.w3.org/2000/svg"><rect width="500" height="120" fill="white"/><g stroke="black" stroke-width="2"><path d="M10 10V110M130 10V110M440 10V110M490 10V110M10 10H490M10 40H490M10 75H490M10 110H490"/></g></svg>')
+  const grid = await detectTableGrid(svg)
+  assert.ok(grid)
+  const annotation = { pages: [{ width: 500, blocks: [{ paragraphs: [{ words: [
+    word('メーカー', 60, 15, 120, 30), word('製品名', 250, 15, 310, 30), word('数量', 455, 15, 480, 30),
+    word('MAKITA', 45, 48, 110, 65), word('充電式ドライバー', 150, 48, 330, 65), word('1', 460, 48, 470, 65),
+  ] }] }] }] }
+  assert.equal(layoutVisionText(annotation, grid), 'メーカー名\t詳細\t数量\nMAKITA\t充電式ドライバー\t1')
 })

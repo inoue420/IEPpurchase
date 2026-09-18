@@ -1,5 +1,6 @@
 import { defineSecret } from 'firebase-functions/params'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
+import sharp from 'sharp'
 
 const REGION = 'asia-northeast1'
 const visionApiKey = defineSecret('GOOGLE_CLOUD_VISION_API_KEY')
@@ -13,6 +14,7 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 const numberValue = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) ? value : null
 
 interface PositionedWord { text: string; left: number; right: number; top: number; bottom: number; centerX: number; centerY: number; height: number }
+interface TableGrid { width: number; height: number; vertical: number[]; horizontal: number[] }
 type ColumnKey = 'manufacturerName' | 'originalDescription' | 'quantity' | 'unit' | 'partNumber'
 const columnLabels: Record<ColumnKey, string> = { manufacturerName: 'メーカー名', originalDescription: '詳細', quantity: '数量', unit: '単位', partNumber: '品番' }
 
@@ -61,7 +63,54 @@ function detectColumns(words: PositionedWord[]) {
   return columns
 }
 
-function pageLayoutText(value: unknown): string {
+function mergeLinePositions(values: number[]): number[] {
+  const groups: number[][] = []
+  for (const value of values) {
+    const previous = groups.at(-1)
+    if (previous && value - previous.at(-1)! <= 2) previous.push(value)
+    else groups.push([value])
+  }
+  return groups.map(group => group.reduce((sum, value) => sum + value, 0) / group.length)
+}
+
+export async function detectTableGrid(content: Buffer): Promise<TableGrid | null> {
+  try {
+    const { data, info } = await sharp(content, { animated: false }).rotate().removeAlpha().greyscale()
+      .resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true }).raw().toBuffer({ resolveWithObject: true })
+    const isDark = (value: number) => value < 180
+    const vertical = mergeLinePositions(Array.from({ length: info.width }, (_, x) => x)
+      .filter(x => {
+        let dark = 0
+        for (let y = 0; y < info.height; y++) if (isDark(data[y * info.width + x]!)) dark++
+        return dark >= info.height * 0.45
+      }))
+    const horizontal = mergeLinePositions(Array.from({ length: info.height }, (_, y) => y)
+      .filter(y => {
+        let dark = 0
+        for (let x = 0; x < info.width; x++) if (isDark(data[y * info.width + x]!)) dark++
+        return dark >= info.width * 0.45
+      }))
+    return vertical.length >= 3 && horizontal.length >= 3 ? { width: info.width, height: info.height, vertical, horizontal } : null
+  } catch {
+    return null
+  }
+}
+
+function gridBoundaries(headerColumns: { centerX: number }[], grid: TableGrid | null, pageWidth: number): number[] | null {
+  if (!grid) return null
+  const scaleX = pageWidth / grid.width
+  const lines = grid.vertical.map(value => value * scaleX)
+  const boundaries = headerColumns.slice(0, -1).map((column, index) => {
+    const next = headerColumns[index + 1]
+    const candidates = lines.filter(line => line > column.centerX && line < next.centerX)
+    if (!candidates.length) return null
+    const midpoint = (column.centerX + next.centerX) / 2
+    return candidates.reduce((closest, line) => Math.abs(line - midpoint) < Math.abs(closest - midpoint) ? line : closest)
+  })
+  return boundaries.every((value): value is number => value !== null) ? boundaries : null
+}
+
+function pageLayoutText(value: unknown, grid: TableGrid | null): string {
   const page = record(value)
   const words = list(page.blocks).flatMap(block => list(record(block).paragraphs))
     .flatMap(paragraph => list(record(paragraph).words)).map(positionedWord).filter((word): word is PositionedWord => word !== null)
@@ -86,7 +135,8 @@ function pageLayoutText(value: unknown): string {
   const pageWidth = numberValue(page.width) ?? Math.max(...words.map(word => word.right))
   const firstAcceptedX = headerColumns[0].left - Math.max(8, Math.min(pageWidth * 0.02, headerColumns[0].width))
   const dataRows = rows.slice(headerIndex + 1)
-  const boundaries = headerColumns.slice(0, -1).map((column, index) => {
+  const gridBasedBoundaries = gridBoundaries(headerColumns, grid, pageWidth)
+  const boundaries = gridBasedBoundaries ?? headerColumns.slice(0, -1).map((column, index) => {
     const next = headerColumns[index + 1]
     const candidates = dataRows.flatMap(row => {
       const pairs = row.words.slice(0, -1).map((word, wordIndex) => {
@@ -114,9 +164,9 @@ function pageLayoutText(value: unknown): string {
   return lines.length > 1 ? lines.join('\n') : ''
 }
 
-export function layoutVisionText(annotationValue: unknown): string {
+export function layoutVisionText(annotationValue: unknown, grid: TableGrid | null = null): string {
   const annotation = record(annotationValue)
-  return list(annotation.pages).map(pageLayoutText).filter(Boolean).join('\n')
+  return list(annotation.pages).map((page, index) => pageLayoutText(page, index === 0 ? grid : null)).filter(Boolean).join('\n')
 }
 function requestData(value: unknown): VisionRequest {
   const data = record(value)
@@ -144,6 +194,7 @@ async function callVision(path: string, body: unknown, apiKey: string, fetcher: 
 export async function extractVisionText(input: VisionRequest, apiKey: string, fetcher: typeof fetch = fetch): Promise<VisionResult> {
   const feature = { type: 'DOCUMENT_TEXT_DETECTION' }
   const body = input.mimeType === 'application/pdf' ? { requests: [{ inputConfig: { content: input.contentBase64, mimeType: input.mimeType }, features: [feature], pages: Array.from({ length: 5 }, (_, index) => index + 1) }] } : { requests: [{ image: { content: input.contentBase64 }, features: [feature] }] }
+  const grid = imageTypes.has(input.mimeType) ? await detectTableGrid(Buffer.from(input.contentBase64, 'base64')) : null
   const result = await callVision(input.mimeType === 'application/pdf' ? 'files:annotate' : 'images:annotate', body, apiKey, fetcher)
   const outerResponses = Array.isArray(result.responses) ? result.responses.map(record) : []
   const responses = input.mimeType === 'application/pdf'
@@ -153,7 +204,7 @@ export async function extractVisionText(input: VisionRequest, apiKey: string, fe
   if (responses.some(response => record(response.error).message)) throw new HttpsError('failed-precondition', 'OCRできませんでした。画像の向き、鮮明さ、PDFのページ数を確認してください。')
   const text = responses.map(response => {
     const annotation = record(response.fullTextAnnotation)
-    const layoutText = layoutVisionText(annotation)
+    const layoutText = layoutVisionText(annotation, grid)
     return layoutText || (typeof annotation.text === 'string' ? annotation.text : '')
   }).filter(Boolean).join('\n').trim()
   if (!text) throw new HttpsError('failed-precondition', '文字を抽出できませんでした。画像を鮮明にして再試行してください。')

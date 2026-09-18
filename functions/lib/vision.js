@@ -1,10 +1,15 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.extractVisionOcrText = void 0;
+exports.detectTableGrid = detectTableGrid;
 exports.layoutVisionText = layoutVisionText;
 exports.extractVisionText = extractVisionText;
 const params_1 = require("firebase-functions/params");
 const https_1 = require("firebase-functions/v2/https");
+const sharp_1 = __importDefault(require("sharp"));
 const REGION = 'asia-northeast1';
 const visionApiKey = (0, params_1.defineSecret)('GOOGLE_CLOUD_VISION_API_KEY');
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -69,7 +74,60 @@ function detectColumns(words) {
     }
     return columns;
 }
-function pageLayoutText(value) {
+function mergeLinePositions(values) {
+    const groups = [];
+    for (const value of values) {
+        const previous = groups.at(-1);
+        if (previous && value - previous.at(-1) <= 2)
+            previous.push(value);
+        else
+            groups.push([value]);
+    }
+    return groups.map(group => group.reduce((sum, value) => sum + value, 0) / group.length);
+}
+async function detectTableGrid(content) {
+    try {
+        const { data, info } = await (0, sharp_1.default)(content, { animated: false }).rotate().removeAlpha().greyscale()
+            .resize({ width: 2000, height: 2000, fit: 'inside', withoutEnlargement: true }).raw().toBuffer({ resolveWithObject: true });
+        const isDark = (value) => value < 180;
+        const vertical = mergeLinePositions(Array.from({ length: info.width }, (_, x) => x)
+            .filter(x => {
+            let dark = 0;
+            for (let y = 0; y < info.height; y++)
+                if (isDark(data[y * info.width + x]))
+                    dark++;
+            return dark >= info.height * 0.45;
+        }));
+        const horizontal = mergeLinePositions(Array.from({ length: info.height }, (_, y) => y)
+            .filter(y => {
+            let dark = 0;
+            for (let x = 0; x < info.width; x++)
+                if (isDark(data[y * info.width + x]))
+                    dark++;
+            return dark >= info.width * 0.45;
+        }));
+        return vertical.length >= 3 && horizontal.length >= 3 ? { width: info.width, height: info.height, vertical, horizontal } : null;
+    }
+    catch {
+        return null;
+    }
+}
+function gridBoundaries(headerColumns, grid, pageWidth) {
+    if (!grid)
+        return null;
+    const scaleX = pageWidth / grid.width;
+    const lines = grid.vertical.map(value => value * scaleX);
+    const boundaries = headerColumns.slice(0, -1).map((column, index) => {
+        const next = headerColumns[index + 1];
+        const candidates = lines.filter(line => line > column.centerX && line < next.centerX);
+        if (!candidates.length)
+            return null;
+        const midpoint = (column.centerX + next.centerX) / 2;
+        return candidates.reduce((closest, line) => Math.abs(line - midpoint) < Math.abs(closest - midpoint) ? line : closest);
+    });
+    return boundaries.every((value) => value !== null) ? boundaries : null;
+}
+function pageLayoutText(value, grid) {
     const page = record(value);
     const words = list(page.blocks).flatMap(block => list(record(block).paragraphs))
         .flatMap(paragraph => list(record(paragraph).words)).map(positionedWord).filter((word) => word !== null)
@@ -99,7 +157,8 @@ function pageLayoutText(value) {
     const pageWidth = numberValue(page.width) ?? Math.max(...words.map(word => word.right));
     const firstAcceptedX = headerColumns[0].left - Math.max(8, Math.min(pageWidth * 0.02, headerColumns[0].width));
     const dataRows = rows.slice(headerIndex + 1);
-    const boundaries = headerColumns.slice(0, -1).map((column, index) => {
+    const gridBasedBoundaries = gridBoundaries(headerColumns, grid, pageWidth);
+    const boundaries = gridBasedBoundaries ?? headerColumns.slice(0, -1).map((column, index) => {
         const next = headerColumns[index + 1];
         const candidates = dataRows.flatMap(row => {
             const pairs = row.words.slice(0, -1).map((word, wordIndex) => {
@@ -130,9 +189,9 @@ function pageLayoutText(value) {
     }
     return lines.length > 1 ? lines.join('\n') : '';
 }
-function layoutVisionText(annotationValue) {
+function layoutVisionText(annotationValue, grid = null) {
     const annotation = record(annotationValue);
-    return list(annotation.pages).map(pageLayoutText).filter(Boolean).join('\n');
+    return list(annotation.pages).map((page, index) => pageLayoutText(page, index === 0 ? grid : null)).filter(Boolean).join('\n');
 }
 function requestData(value) {
     const data = record(value);
@@ -179,6 +238,7 @@ async function callVision(path, body, apiKey, fetcher = fetch) {
 async function extractVisionText(input, apiKey, fetcher = fetch) {
     const feature = { type: 'DOCUMENT_TEXT_DETECTION' };
     const body = input.mimeType === 'application/pdf' ? { requests: [{ inputConfig: { content: input.contentBase64, mimeType: input.mimeType }, features: [feature], pages: Array.from({ length: 5 }, (_, index) => index + 1) }] } : { requests: [{ image: { content: input.contentBase64 }, features: [feature] }] };
+    const grid = imageTypes.has(input.mimeType) ? await detectTableGrid(Buffer.from(input.contentBase64, 'base64')) : null;
     const result = await callVision(input.mimeType === 'application/pdf' ? 'files:annotate' : 'images:annotate', body, apiKey, fetcher);
     const outerResponses = Array.isArray(result.responses) ? result.responses.map(record) : [];
     const responses = input.mimeType === 'application/pdf'
@@ -190,7 +250,7 @@ async function extractVisionText(input, apiKey, fetcher = fetch) {
         throw new https_1.HttpsError('failed-precondition', 'OCRできませんでした。画像の向き、鮮明さ、PDFのページ数を確認してください。');
     const text = responses.map(response => {
         const annotation = record(response.fullTextAnnotation);
-        const layoutText = layoutVisionText(annotation);
+        const layoutText = layoutVisionText(annotation, grid);
         return layoutText || (typeof annotation.text === 'string' ? annotation.text : '');
     }).filter(Boolean).join('\n').trim();
     if (!text)

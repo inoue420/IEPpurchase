@@ -3,6 +3,7 @@ import { SecretManagerServiceClient } from '@google-cloud/secret-manager'
 import { getFirestore, Timestamp } from 'firebase-admin/firestore'
 import { defineSecret } from 'firebase-functions/params'
 import { HttpsError, onCall, onRequest } from 'firebase-functions/v2/https'
+import { safeOAuthDescription } from './freeeDiagnostics'
 
 const REGION = 'asia-northeast1'
 const AUTHORIZE_URL = 'https://accounts.secure.freee.co.jp/public_api/authorize'
@@ -47,7 +48,7 @@ export const beginFreeeOAuth = onCall({ region: REGION, invoker: 'public', secre
   const clientId = freeeClientId.value()
   if (!clientId) throw new HttpsError('failed-precondition', 'freee Client IDが未設定です。')
   const state = randomBytes(32).toString('base64url')
-  await db.collection('freeeOAuthStates').doc(stateDocumentId(state)).create({ requestedBy: request.auth.uid, createdAt: Timestamp.now(), expiresAt: Timestamp.fromMillis(Date.now() + STATE_TTL_MS) })
+  await db.collection('freeeOAuthStates').doc(stateDocumentId(state)).create({ requestedBy: request.auth.uid, createdAt: Timestamp.now(), expiresAt: Timestamp.fromMillis(Date.now() + STATE_TTL_MS), clientIdHash: stateDocumentId(clientId), redirectUri: callbackUrl(), startRevision: process.env.K_REVISION ?? 'unknown' })
   const authorizationUrl = new URL(AUTHORIZE_URL)
   authorizationUrl.searchParams.set('response_type', 'code'); authorizationUrl.searchParams.set('client_id', clientId); authorizationUrl.searchParams.set('redirect_uri', callbackUrl()); authorizationUrl.searchParams.set('state', state); authorizationUrl.searchParams.set('prompt', 'select_company')
   return { authorizationUrl: authorizationUrl.toString() }
@@ -57,9 +58,17 @@ async function exchangeCode(code: string): Promise<{ accessToken: string; refres
   const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: freeeClientId.value(), client_secret: freeeClientSecret.value(), code, redirect_uri: callbackUrl() })
   const result = await fetch(TOKEN_URL, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body })
   if (!result.ok) {
-    const errorBody = await result.json().catch(() => null) as { error?: unknown } | null
-    const errorCode = typeof errorBody?.error === 'string' ? errorBody.error : 'unknown_error'
-    throw new Error(`freee token endpoint returned ${result.status} (${errorCode}); code=${JSON.stringify(codeDiagnostics(code))}; redirectUri=${callbackUrl()}`)
+    const errorBody = await result.json().catch(() => null) as { error?: unknown; error_description?: unknown } | null
+    const sensitive = [freeeClientId.value(), freeeClientSecret.value(), code]
+    const errorCode = safeOAuthDescription(errorBody?.error, sensitive)
+    const description = safeOAuthDescription(errorBody?.error_description, sensitive)
+    const diagnostics = {
+      revision: process.env.K_REVISION ?? 'unknown',
+      clientIdHasWhitespace: /\s/.test(freeeClientId.value()),
+      clientSecretHasWhitespace: /\s/.test(freeeClientSecret.value()),
+      clientSecretEmpty: freeeClientSecret.value().length === 0,
+    }
+    throw new Error(`freee token endpoint returned ${result.status} (${errorCode}); description=${description}; diagnostics=${JSON.stringify(diagnostics)}; code=${JSON.stringify(codeDiagnostics(code))}; redirectUri=${callbackUrl()}`)
   }
   const token = await result.json() as TokenResponse
   if (typeof token.access_token !== 'string' || typeof token.refresh_token !== 'string' || typeof token.expires_in !== 'number') throw new Error('freee token response is invalid')
@@ -80,6 +89,15 @@ export const freeeOAuthCallback = onRequest({ region: REGION, invoker: 'public',
   if (!stateSnapshot.exists || stateSnapshot.get('expiresAt').toMillis() < Date.now()) { if (stateSnapshot.exists) await stateRef.delete(); return page(response, 400, '認可を確認できません', '認可状態が無効または期限切れです。IEPpurchaseからやり直してください。') }
   await stateRef.delete()
   if (providerError || !code) return page(response, 400, 'freee連携は完了していません', 'freeeで認可が取り消されたか、認可コードを受信できませんでした。')
+  // Compare the actual start/exchange settings without logging credentials or state.
+  console.info('freee OAuth exchange context', {
+    revision: process.env.K_REVISION ?? 'unknown',
+    startRevision: stateSnapshot.get('startRevision') ?? 'legacy',
+    clientIdMatches: typeof stateSnapshot.get('clientIdHash') === 'string' ? stateSnapshot.get('clientIdHash') === stateDocumentId(freeeClientId.value()) : null,
+    redirectUriMatches: typeof stateSnapshot.get('redirectUri') === 'string' ? stateSnapshot.get('redirectUri') === callbackUrl() : null,
+    elapsedSinceStartMs: Date.now() - stateSnapshot.get('createdAt').toMillis(),
+    codeFingerprint: codeDiagnostics(code).fingerprint,
+  })
   try { await storeTokens(await exchangeCode(code)); return page(response, 200, 'freee連携を設定しました', '対象事業所への接続情報を安全に保存しました。見積書の作成・送付はまだ実行していません。') } catch (error) { console.error('freee OAuth callback failed', error); return page(response, 502, 'freee連携を設定できませんでした', 'トークンの取得または安全な保存に失敗しました。IEPpurchaseからもう一度お試しください。') }
 })
 export const freeeOAuthCallbackUrl = callbackUrl

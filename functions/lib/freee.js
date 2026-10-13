@@ -6,6 +6,7 @@ const secret_manager_1 = require("@google-cloud/secret-manager");
 const firestore_1 = require("firebase-admin/firestore");
 const params_1 = require("firebase-functions/params");
 const https_1 = require("firebase-functions/v2/https");
+const freeeDiagnostics_1 = require("./freeeDiagnostics");
 const REGION = 'asia-northeast1';
 const AUTHORIZE_URL = 'https://accounts.secure.freee.co.jp/public_api/authorize';
 const TOKEN_URL = 'https://accounts.secure.freee.co.jp/public_api/token';
@@ -50,7 +51,7 @@ exports.beginFreeeOAuth = (0, https_1.onCall)({ region: REGION, invoker: 'public
     if (!clientId)
         throw new https_1.HttpsError('failed-precondition', 'freee Client IDが未設定です。');
     const state = (0, node_crypto_1.randomBytes)(32).toString('base64url');
-    await db.collection('freeeOAuthStates').doc(stateDocumentId(state)).create({ requestedBy: request.auth.uid, createdAt: firestore_1.Timestamp.now(), expiresAt: firestore_1.Timestamp.fromMillis(Date.now() + STATE_TTL_MS) });
+    await db.collection('freeeOAuthStates').doc(stateDocumentId(state)).create({ requestedBy: request.auth.uid, createdAt: firestore_1.Timestamp.now(), expiresAt: firestore_1.Timestamp.fromMillis(Date.now() + STATE_TTL_MS), clientIdHash: stateDocumentId(clientId), redirectUri: callbackUrl(), startRevision: process.env.K_REVISION ?? 'unknown' });
     const authorizationUrl = new URL(AUTHORIZE_URL);
     authorizationUrl.searchParams.set('response_type', 'code');
     authorizationUrl.searchParams.set('client_id', clientId);
@@ -64,8 +65,16 @@ async function exchangeCode(code) {
     const result = await fetch(TOKEN_URL, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
     if (!result.ok) {
         const errorBody = await result.json().catch(() => null);
-        const errorCode = typeof errorBody?.error === 'string' ? errorBody.error : 'unknown_error';
-        throw new Error(`freee token endpoint returned ${result.status} (${errorCode}); code=${JSON.stringify(codeDiagnostics(code))}; redirectUri=${callbackUrl()}`);
+        const sensitive = [freeeClientId.value(), freeeClientSecret.value(), code];
+        const errorCode = (0, freeeDiagnostics_1.safeOAuthDescription)(errorBody?.error, sensitive);
+        const description = (0, freeeDiagnostics_1.safeOAuthDescription)(errorBody?.error_description, sensitive);
+        const diagnostics = {
+            revision: process.env.K_REVISION ?? 'unknown',
+            clientIdHasWhitespace: /\s/.test(freeeClientId.value()),
+            clientSecretHasWhitespace: /\s/.test(freeeClientSecret.value()),
+            clientSecretEmpty: freeeClientSecret.value().length === 0,
+        };
+        throw new Error(`freee token endpoint returned ${result.status} (${errorCode}); description=${description}; diagnostics=${JSON.stringify(diagnostics)}; code=${JSON.stringify(codeDiagnostics(code))}; redirectUri=${callbackUrl()}`);
     }
     const token = await result.json();
     if (typeof token.access_token !== 'string' || typeof token.refresh_token !== 'string' || typeof token.expires_in !== 'number')
@@ -94,6 +103,15 @@ exports.freeeOAuthCallback = (0, https_1.onRequest)({ region: REGION, invoker: '
     await stateRef.delete();
     if (providerError || !code)
         return page(response, 400, 'freee連携は完了していません', 'freeeで認可が取り消されたか、認可コードを受信できませんでした。');
+    // Compare the actual start/exchange settings without logging credentials or state.
+    console.info('freee OAuth exchange context', {
+        revision: process.env.K_REVISION ?? 'unknown',
+        startRevision: stateSnapshot.get('startRevision') ?? 'legacy',
+        clientIdMatches: typeof stateSnapshot.get('clientIdHash') === 'string' ? stateSnapshot.get('clientIdHash') === stateDocumentId(freeeClientId.value()) : null,
+        redirectUriMatches: typeof stateSnapshot.get('redirectUri') === 'string' ? stateSnapshot.get('redirectUri') === callbackUrl() : null,
+        elapsedSinceStartMs: Date.now() - stateSnapshot.get('createdAt').toMillis(),
+        codeFingerprint: codeDiagnostics(code).fingerprint,
+    });
     try {
         await storeTokens(await exchangeCode(code));
         return page(response, 200, 'freee連携を設定しました', '対象事業所への接続情報を安全に保存しました。見積書の作成・送付はまだ実行していません。');

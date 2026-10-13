@@ -1,6 +1,6 @@
 import { Timestamp, collection, doc, onSnapshot, orderBy, query, runTransaction, serverTimestamp, writeBatch, type Unsubscribe } from 'firebase/firestore'
 import { firestore } from '../../firebase/firebase'
-import { ecPurchaseCandidateSchema, rfqItemSchema, type RfqItemStatus } from './rfqItemSchema'
+import { ecPurchaseCandidateSchema, rfqItemSchema, rfqItemStatusAfterRakutenSearch, type RfqItemStatus } from './rfqItemSchema'
 
 export interface EcPurchaseCandidate { storeProductName: string; url: string; price: number; purchasePlanned: boolean }
 export interface RfqItemInput { originalDescription: string; translatedDescription: string; productId: string; manufacturerId: string; manufacturerName: string; partNumber: string; productName: string; quantity: number; supplierResponseUnitPrice: number | null; unit: string; supplierQuoteRequestEnabled: boolean; marketplaceOfferEnabled: boolean; ecPurchaseCandidates: EcPurchaseCandidate[]; requestedDeliveryDate: string; status: RfqItemStatus; note: string }
@@ -80,15 +80,19 @@ export async function setRfqItemSupplierResponseUnitPrices(rfqId: string, update
   for (const update of updates) batch.update(doc(firestore, 'rfqs', rfqId, 'items', update.itemId), { supplierResponseUnitPrice: update.supplierResponseUnitPrice, updatedAt: serverTimestamp() })
   await batch.commit()
 }
-export async function appendRfqItemEcPurchaseCandidates(rfqId: string, itemId: string, candidates: EcPurchaseCandidate[]): Promise<number> {
+export async function appendRfqItemEcPurchaseCandidates(rfqId: string, itemId: string, candidates: EcPurchaseCandidate[], searchedSource?: Pick<RfqItemInput, 'manufacturerName' | 'partNumber'>): Promise<number> {
   const parsed = ecPurchaseCandidateSchema.array().max(10).parse(candidates)
   const itemRef = doc(firestore, 'rfqs', rfqId, 'items', itemId)
   return runTransaction(firestore, async transaction => {
     const current = await transaction.get(itemRef)
     if (!current.exists() || current.data().archivedAt != null || current.data().status === 'cancelled') throw new Error('品目が変更または削除されています。再読込してください。')
-    const existing = readEcPurchaseCandidates(current.data().ecPurchaseCandidates)
+    const data = current.data()
+    if (searchedSource && (data.marketplaceOfferEnabled === false || asText(data.manufacturerName).trim() !== searchedSource.manufacturerName.trim() || asText(data.partNumber).trim() !== searchedSource.partNumber.trim())) throw new Error('検索中にメーカー・品番・EC対象が変更されています。再検索してください。')
+    const existing = readEcPurchaseCandidates(data.ecPurchaseCandidates)
     const additions = parsed.filter(candidate => !existing.some(value => value.url === candidate.url)).slice(0, 10 - existing.length)
-    if (additions.length > 0) transaction.update(itemRef, { ecPurchaseCandidates: [...existing, ...additions].sort((a, b) => a.price - b.price), updatedAt: serverTimestamp() })
+    const next = [...existing, ...additions].sort((a, b) => a.price - b.price)
+    const status = rfqItemStatusAfterRakutenSearch(asText(data.status) as RfqItemStatus, parsed.length > 0, next.some(candidate => candidate.purchasePlanned))
+    transaction.update(itemRef, { ...(additions.length > 0 ? { ecPurchaseCandidates: next } : {}), status, updatedAt: serverTimestamp() })
     return additions.length
   })
 }export async function setRfqItemSourcingTargets(rfqId: string, itemId: string, supplierQuoteRequestEnabled: boolean, marketplaceOfferEnabled: boolean): Promise<void> {

@@ -1,10 +1,16 @@
 import { z } from 'zod'
 
-export const RFQ_ITEM_STATUSES = ['pending', 'sourcing', 'quoted', 'ordered', 'received', 'cancelled'] as const
+export const RFQ_ITEM_STATUSES = ['pending', 'sourcing', 'candidates_listed', 'no_search_results', 'quoted', 'ordered', 'received', 'cancelled'] as const
 export type RfqItemStatus = typeof RFQ_ITEM_STATUSES[number]
 
 export const rfqItemStatusLabels: Record<RfqItemStatus, string> = {
-  pending: '未処理', sourcing: '仕入先選定中', quoted: '見積取得済み', ordered: '発注済み', received: '入荷済み', cancelled: 'キャンセル',
+  pending: '未処理', sourcing: '仕入先選定中', candidates_listed: '候補掲載済', no_search_results: '検索結果無し', quoted: '見積取得済み', ordered: '発注済み', received: '入荷済み', cancelled: 'キャンセル',
+}
+
+export function rfqItemStatusAfterRakutenSearch(status: RfqItemStatus, hasMatches: boolean, hasPurchasePlanned: boolean): RfqItemStatus {
+  if (['ordered', 'received', 'cancelled'].includes(status)) return status
+  if (status === 'quoted' || hasPurchasePlanned) return 'quoted'
+  return hasMatches ? 'candidates_listed' : 'no_search_results'
 }
 
 export const ecPurchaseCandidateSchema = z.object({

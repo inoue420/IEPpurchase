@@ -292,9 +292,17 @@ describe('RFQ items', () => {
     await assertSucceeds(updateDoc(ref, { ecPurchaseCandidates: Array.from({ length: 10 }, (_, index) => candidate(index)), updatedAt: serverTimestamp() }))
     await assertFails(updateDoc(ref, { ecPurchaseCandidates: Array.from({ length: 11 }, (_, index) => candidate(index)), updatedAt: serverTimestamp() }))
   })
+  it.each(['candidates_listed', 'no_search_results'])('allows authenticated search result status, then quotation status: %s', async status => {
+    const ref = doc(dbFor('member'), 'rfqs/existing/items/existing')
+    await assertSucceeds(updateDoc(ref, { status, updatedAt: serverTimestamp() }))
+    expect((await getDoc(ref)).data()?.status).toBe(status)
+    await assertFails(updateDoc(doc(env.unauthenticatedContext().firestore(), 'rfqs/existing/items/existing'), { status, updatedAt: serverTimestamp() }))
+    await assertSucceeds(updateDoc(ref, { status: 'quoted', updatedAt: serverTimestamp() }))
+  })
   it('rejects orphan items, counter jumps and standalone allocations', async () => {
     await assertFails(createItem('missing', 1))
-    await assertFails(createItem('existing', 3))
+    // Bulk entry reserves up to 50 numbers; reject a jump beyond that limit.
+    await assertFails(createItem('existing', 52))
     await assertFails(setDoc(doc(dbFor('member'), 'rfqs/existing/items/new'), item()))
   })
   it.each([

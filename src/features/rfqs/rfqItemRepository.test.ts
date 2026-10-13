@@ -82,7 +82,40 @@ describe('RFQ品目保存', () => {
     mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status: 'pending', ecPurchaseCandidates: [{ storeProductName: '既存', url: 'https://example.test/existing', price: 100, purchasePlanned: true }] }) })
     const added = await appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', [{ storeProductName: '新規', url: 'https://example.test/new', price: 200, purchasePlanned: false }, { storeProductName: '重複', url: 'https://example.test/existing', price: 100, purchasePlanned: false }])
     expect(added).toBe(1)
-    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { ecPurchaseCandidates: [{ storeProductName: '既存', url: 'https://example.test/existing', price: 100, purchasePlanned: true }, { storeProductName: '新規', url: 'https://example.test/new', price: 200, purchasePlanned: false }], updatedAt: 'server-time' })
+    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { ecPurchaseCandidates: [{ storeProductName: '既存', url: 'https://example.test/existing', price: 100, purchasePlanned: true }, { storeProductName: '新規', url: 'https://example.test/new', price: 200, purchasePlanned: false }], status: 'quoted', updatedAt: 'server-time' })
+  })
+  it('一致候補を掲載済みとして同時に保存する', async () => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status: 'pending', manufacturerName: 'メーカー', partNumber: 'A-1', ecPurchaseCandidates: [] }) })
+    const candidates = [{ storeProductName: '商品', url: 'https://example.test/new', price: 200, purchasePlanned: false }]
+    await appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', candidates, { manufacturerName: 'メーカー', partNumber: 'A-1' })
+    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { ecPurchaseCandidates: candidates, status: 'candidates_listed', updatedAt: 'server-time' })
+  })
+  it('検索結果無しを保存し、以前の候補を削除しない', async () => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status: 'candidates_listed', ecPurchaseCandidates: [{ storeProductName: '以前の候補', url: 'https://example.test/old', price: 100, purchasePlanned: false }] }) })
+    expect(await appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', [])).toBe(0)
+    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { status: 'no_search_results', updatedAt: 'server-time' })
+  })
+  it('重複URLだけの検索結果でも候補掲載済とし、候補を重複追加しない', async () => {
+    const candidate = { storeProductName: '商品', url: 'https://example.test/existing', price: 100, purchasePlanned: false }
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status: 'pending', ecPurchaseCandidates: [candidate] }) })
+    expect(await appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', [candidate])).toBe(0)
+    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { status: 'candidates_listed', updatedAt: 'server-time' })
+  })
+  it('検索中に購入予定候補が選択されても見積取得済みを優先する', async () => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status: 'pending', ecPurchaseCandidates: [{ storeProductName: '選択済み', url: 'https://example.test/selected', price: 100, purchasePlanned: true }] }) })
+    await appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', [])
+    expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { status: 'quoted', updatedAt: 'server-time' })
+  })
+  it.each(['quoted', 'ordered', 'received'])('再検索後も進んだ状態を維持する: %s', status => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status, ecPurchaseCandidates: [] }) })
+    return appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', []).then(() => {
+      expect(mock.update).toHaveBeenCalledWith('rfqs/rfq-a/items/item-a', { status, updatedAt: 'server-time' })
+    })
+  })
+  it.each([{ manufacturerName: '別メーカー' }, { partNumber: 'B-2' }, { marketplaceOfferEnabled: false }, { status: 'cancelled' }, { archivedAt: 'deleted' }])('検索中に対象品目が変わった場合は保存しない: %j', async change => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ manufacturerName: 'メーカー', partNumber: 'A-1', marketplaceOfferEnabled: true, status: 'pending', archivedAt: null, ecPurchaseCandidates: [], ...change }) })
+    await expect(appendRfqItemEcPurchaseCandidates('rfq-a', 'item-a', [], { manufacturerName: 'メーカー', partNumber: 'A-1' })).rejects.toThrow()
+    expect(mock.update).not.toHaveBeenCalled()
   })
   it('一覧から対応先だけを安全に切り替える', async () => {
     mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null }) })

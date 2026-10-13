@@ -152,7 +152,7 @@ service cloud.firestore {
           && (!d.keys().hasAll(['supplierQuoteRequestEnabled', 'marketplaceOfferEnabled']) || d.supplierQuoteRequestEnabled || d.marketplaceOfferEnabled)
           && (!d.keys().hasAny(['ecPurchaseCandidates']) || validEcPurchaseCandidates(d.ecPurchaseCandidates))
           && (d.requestedDeliveryDate == null || d.requestedDeliveryDate is timestamp)
-          && d.status in ['pending', 'sourcing', 'quoted', 'ordered', 'received', 'cancelled']
+          && d.status in ['pending', 'sourcing', 'candidates_listed', 'no_search_results', 'quoted', 'ordered', 'received', 'cancelled']
           && d.note is string && d.note.size() <= 5000
           && d.createdAt is timestamp && d.updatedAt == request.time
           && (d.archivedAt == null || d.archivedAt is timestamp);

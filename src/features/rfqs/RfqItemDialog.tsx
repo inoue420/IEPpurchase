@@ -1,7 +1,7 @@
 import { useRef, useState, type FormEvent } from 'react'
 import { Alert, Autocomplete, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, FormGroup, Link, MenuItem, Stack, TextField, Typography } from '@mui/material'
 import { createRfqItem, updateRfqItem, type EcPurchaseCandidate, type RfqItem, type RfqItemInput, type RfqItemProduct } from './rfqItemRepository'
-import { RFQ_ITEM_STATUSES, localDateInput, rfqItemSchema, rfqItemStatusLabels } from './rfqItemSchema'
+import { RFQ_ITEM_STATUSES, localDateInput, rfqItemSchema, rfqItemStatusLabels, rfqItemStatusAfterRakutenSearch } from './rfqItemSchema'
 import { rfqError } from './rfqError'
 import { RakutenSearchDialog, type RakutenSearchItem } from '../marketplaceOffers/RakutenSearchDialog'
 import { selectPartNumberMatchedRakutenItems } from './rakutenCandidateSelection'
@@ -35,6 +35,7 @@ export function RfqItemDialog({ rfqId, item, products, onClose, onSaved }: { rfq
   function addRakutenCandidates(results: RakutenSearchItem[]) {
     const emptyCount = ecPurchaseCandidates.filter(candidate => !candidate.storeProductName && !candidate.url && !candidate.price).length
     const matched = selectPartNumberMatchedRakutenItems(results, input.partNumber, emptyCount)
+    setInput(current => ({ ...current, status: rfqItemStatusAfterRakutenSearch(current.status, matched.length > 0, ecPurchaseCandidates.some(candidate => candidate.purchasePlanned)) }))
     setRakutenSearchOpen(false)
     if (matched.length === 0) {
       setNotice(null)

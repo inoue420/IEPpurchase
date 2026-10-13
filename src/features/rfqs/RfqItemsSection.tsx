@@ -60,20 +60,19 @@ export function RfqItemsSection({ rfqId }: { rfqId: string }) {
     const targets = visible.filter(item => !item.archivedAt && item.status !== 'cancelled' && item.marketplaceOfferEnabled)
     if (bulkSearching.current || targets.length === 0) return
     bulkSearching.current = true; setBusy(true); setActionError(null); setNotice(null)
-    let addedItems = 0; let addedCandidates = 0; let skipped = 0; let failed = 0
+    let matchedItems = 0; let addedCandidates = 0; let noResults = 0; let skipped = 0; let failed = 0
     try {
       for (const [index, item] of targets.entries()) {
         setBulkProgress(`${index + 1}/${targets.length}: 明細No. ${item.lineNo} を楽天検索中…`)
         if (!item.manufacturerName.trim() || !item.partNumber.trim() || item.ecPurchaseCandidates.length >= 10) { skipped += 1; continue }
         try {
           const result = await searchRakutenItems(`${item.manufacturerName.trim()} ${item.partNumber.trim()}`)
-          const matched = selectPartNumberMatchedRakutenItems(result.items, item.partNumber, 10 - item.ecPurchaseCandidates.length)
-          if (matched.length === 0) { skipped += 1; continue }
-          const added = await appendRfqItemEcPurchaseCandidates(rfqId, item.id, matched.map(value => ({ storeProductName: value.itemName, url: value.itemUrl, price: value.itemPrice, purchasePlanned: false })))
-          if (added > 0) { addedItems += 1; addedCandidates += added } else skipped += 1
+          const matched = selectPartNumberMatchedRakutenItems(result.items, item.partNumber, 10)
+          const added = await appendRfqItemEcPurchaseCandidates(rfqId, item.id, matched.map(value => ({ storeProductName: value.itemName, url: value.itemUrl, price: value.itemPrice, purchasePlanned: false })), { manufacturerName: item.manufacturerName, partNumber: item.partNumber })
+          if (matched.length > 0) { matchedItems += 1; addedCandidates += added } else noResults += 1
         } catch { failed += 1 }
       }
-      setNotice(`楽天一括検索完了: ${targets.length}品目中、${addedItems}品目へ${addedCandidates}件を追加${skipped ? `、${skipped}品目は一致候補なし・入力不足・空き枠なし` : ''}${failed ? `、${failed}品目は検索または保存に失敗` : ''}。`)
+      setNotice(`楽天一括検索完了: ${targets.length}品目中、${matchedItems}品目で一致候補あり（${addedCandidates}件追加）${noResults ? `、${noResults}品目は検索結果無し` : ''}${skipped ? `、${skipped}品目は入力不足・空き枠なしで省略` : ''}${failed ? `、${failed}品目は検索または保存に失敗` : ''}。`)
     } finally {
       bulkSearching.current = false; setBusy(false); setBulkProgress(null)
     }

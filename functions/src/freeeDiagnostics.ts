@@ -6,6 +6,6 @@ export function safeOAuthDescription(value: unknown, secrets: string[]): string 
     for (const variant of [secret, encodeURIComponent(secret)]) text = text.split(variant).join('[redacted]')
   }
   return text.replace(/https?:\/\/\S+/g, '[url]')
-    .replace(/[A-Za-z0-9_+\/%=.-]{20,}/g, '[redacted]')
+    .replace(/[A-Za-z0-9_+/%=.-]{20,}/g, '[redacted]')
     .replace(/[\r\n\t]/g, ' ').slice(0, 600)
 }

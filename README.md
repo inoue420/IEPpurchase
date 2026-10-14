@@ -19,6 +19,7 @@
 - GitHub
 
 ## 開発資料
+- `docs/RELEASE.md` : Gitタグによるリリース・バージョン自動表示の手順
 - `AGENTS.md` : Codex / AI開発ルール
 - `docs/ARCHITECTURE.md` : システム構成・データ設計方針
 - `docs/CURRENT_STATUS.md` : 現在のPhase・進捗

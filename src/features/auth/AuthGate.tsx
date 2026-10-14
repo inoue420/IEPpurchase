@@ -85,7 +85,10 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   if (user) return <>
     <Stack direction="row" spacing={2} sx={{ p: 2, alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-      <Typography sx={{ overflowWrap: 'anywhere' }}>{user.email}</Typography>
+      <Box sx={{ minWidth: 0 }}>
+        <Typography sx={{ overflowWrap: 'anywhere' }}>{user.email}</Typography>
+        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', overflowWrap: 'anywhere' }}>バージョン {__APP_VERSION__}</Typography>
+      </Box>
       <Button variant="outlined" disabled={busy} onClick={() => void logout()}>{busy ? '処理中…' : 'ログアウト'}</Button>
     </Stack>
     {error && <Alert severity="error" sx={{ mx: 2 }}>{error}</Alert>}

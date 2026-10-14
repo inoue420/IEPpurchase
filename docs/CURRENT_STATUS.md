@@ -1,3 +1,23 @@
+## 販売見積の改訂・freee上書き更新（2026-10-14・完了／ユーザー確認OK・本番反映済み）
+- ユーザーが1案を採用。同じ案件番号で明細・価格を引き継いで改訂し、新しい保存版を作る。旧保存版・転記結果・IDは保持する。保存済みの下書き／登録拒否も明細を編集可能にした。
+- 前回見積の顧客提示有無を選択必須とする。未提示なら元のfreee見積書IDへPUTで上書き（POSTなし）、提示済みなら旧見積を残してPOSTで新規作成。保存・最終確認でも方式と対象IDを表示する。手動採番の新規改訂は新しい番号を入力する。
+- サーバーの改訂開始トランザクションとediting許可で、旧送信プレビュー・未再保存明細の転記・許可偽造・送信中／結果不明の編集を拒否する。上書き前GETで前回内容・ID・事業所・社内メモを照合し、手修正・送付済み・取消済み・404・取得失敗時はPUTを行わない。更新拒否時にPOSTへ切り替えない。テンプレート・宛先・担当者等を保持し、PUT結果不明は元IDと新版メモで照合する。
+- 自動確認: typecheck・lint・フロントproduction build・Functions build成功。フロント単体212件、Functions単体40件、Firestore Emulator157件成功。取引先保持の最終追加後に販売見積結合31件も成功。ブラウザで実コンポーネント・架空データ・通信モックによる未提示の同一ID更新、提示済みの別ID新規作成、選択必須、明細修正／再確定／再保存、価格・備考の引き継ぎ、旧版表示を確認。既存lint警告1件とbuild警告は継続。
+- 主な変更: 販売見積の翻訳確認／freee転記画面とrepository、functions/src/freeeQuotation.ts・freeeQuotationTransport.ts・index.ts（生成済みlibを含む）、firestore.rules、RFQ進捗購読、関連単体／結合テスト。先のマージン計算式変更を含む未コミット変更は保持。
+- ユーザーが改訂機能と先の販売単価計算式変更をまとめて本番反映することを明示承認。startSalesQuoteRevision作成、saveSalesQuotePricing・sendFreeeQuotation・reconcileFreeeQuotation更新、Firestore Rules・Hostingの本番反映に成功。公開先: https://ieppurchase.web.app 。初回のsandbox内認証／DNS／メタデータ接続エラーは承認済み再実行で解消し、ユーザー再認証は不要だった。
+- 本番読み取り確認（2026-10-14 15:27 JST）: 対象4関数ACTIVE・各新revisionへ100%配信・固定Secret bindingなし・未認証Callable401。公開ページHTTP200、配信中/assets/index-CkFA9aX4.jsとローカル検証ビルドのSHA-256一致、Firestore公開RulesとローカルRulesの内容一致を確認。秘密値の取得、実freee更新／新規登録、本番業務DB更新は行っていない。Gitコミットは未実施。実アプリの更新権限と実帳票はユーザー操作で確認する。詳細・手順: docs/SALES_QUOTE_REVISIONS.md。値を含まない確認記録: tmp/sales-quote-revision-preview/verified-functions.json・verified-hosting-rules.json。
+- ユーザー確認（2026-10-14）: 本番反映後の案内に対し「OKいいかんじです！」を受領し、今回の改訂機能を完了とした。ユーザーの確認OKとして記録し、AIによる実freee更新や個別の確認項目すべての実機検証とは区別する。
+- 管理シート更新不要（既存販売見積機能の改善として本記録へ追記）。本件はクローズ。次の機能はユーザーの指示に従う。
+
+## 販売単価のマージン計算式変更（2026-10-14・完了／ユーザー確認OK・本番反映済み）
+- ユーザー指示により、販売単価を（購入金額＋送料）×マージンから（購入金額＋送料）÷（2−マージン）へ変更。画面と保存時のサーバー検証で同じ関数を利用する。送料空欄は0円、100円単位の四捨五入、税区分・税率別の消費税計算は維持。
+- マージンは0より大きく2未満・小数3桁以内に制限し、ゼロ除算と負の分母を拒否する。分母は整数の千分率で計算し、1.9等で浮動小数点の減算が四捨五入の境界をずらす問題を防ぐ。販売単価10億円の既存上限も維持。
+- 保存済みの下書き／登録拒否の編集内容は読込み時に新式で再計算し、利用者の保存操作で新しい版を作成する。購入金額のない従来の手入力単価、送信済み／送信中／結果不明の保存版、過去の履歴は書き換えない。
+- 自動確認: typecheck・lint・フロントproduction build・Functions build成功。販売見積関連単体42件、Firestore Emulator販売見積結合23件成功。画像の購入金額1997／31999／2588円、送料空欄・マージン1.2では販売単価2500／40000／3200円となる。ゼロ除算・旧式単価の保存拒否・税計算・旧版保持も確認。初回のテスト一時ファイルrename制約／Emulatorのローカル接続制約は許可済み再実行で解消。lintの既存tmp警告1件とbuildの既存依存注釈・bundleサイズ警告は継続。
+- 主な変更: functions/src/salesQuoteModel.ts（および生成済みlib）、src/features/salesQuotes/FreeeQuotationSection.tsx、salesQuoteSettingsEqual.ts、販売見積単体・結合テスト。実装時点ではデプロイ未実施だったが、2026-10-14のユーザー明示承認により改訂機能とまとめてsaveSalesQuotePricingとHostingを本番反映済み。配信ビルドとローカル検証版の一致を確認。本番業務データ更新・freeeへの実送信は行っていない。
+- ユーザー確認（2026-10-14）: 改訂機能と計算式変更をまとめて本番反映した後、「OKいいかんじです！」を受領し、今回の変更を完了とした。個別の金額例の実機確認はAIでは実施していない。
+- 管理シート更新不要（既存の販売見積計算式の修正として本記録へ追記）。コミット未実施。本件はクローズ。次の機能はユーザーの指示に従う。
+
 ## 開発運用：Secret Manager集約（2026-10-14・完了／ユーザー確認OK）
 - ユーザーの「2でお願い、既存には影響がないように」に対応。freeeのClient ID/SecretをFREEE_APP_CREDENTIALS、楽天のApplication ID/Access KeyをRAKUTEN_CREDENTIALSのJSONへ集約。稼働中の固定版からメモリ内でコピーし、本番の新しい固定版との値一致を確認。キーの再発行・認可URL・楽天の許可サイト・業務データ・画面・外部登録処理は変更していない。
 - freeeトークン利用5関数の固定Secret bindingを空一覧で明示解除。FirestoreのintegrationSecrets/freeeOAuthTokensには秘密値を含まないcurrentVersionとserver timestampのみを保存し、Secret Managerの数値版を参照する。API応答のproject番号を正規化、transactionで版番号の後戻りを防止し、破棄と読取りの競合時は最新の管理情報を再取得して再試行する。

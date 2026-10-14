@@ -56,6 +56,15 @@ describe('RFQ案件の進捗読込', () => {
     emitExport(status)
     expect(getRfqDisplayStatus('received', change.mock.lastCall![0])).toBe('quotes_received')
   })
+  it('既に転記済みの案件は改訂中や改訂の転記失敗でも見積作成済みを保持する', () => {
+    const change = vi.fn()
+    subscribeRfqProgress('rfq-a', change, vi.fn())
+    emitItems([{ status: 'quoted' }])
+    for (const status of ['draft', 'sending', 'failed', 'uncertain']) {
+      mock.listeners.get(exportPath)!.next({ docs: [], data: () => ({ status, lastSentRevision: 1 }) })
+      expect(getRfqDisplayStatus('received', change.mock.lastCall![0])).toBe('quote_created')
+    }
+  })
   it.each([itemsPath, exportPath])('読込失敗を報告し、他方の読込だけで進捗を確定しない: %s', path => {
     const change = vi.fn(), error = vi.fn(), cause = new Error('denied')
     subscribeRfqProgress('rfq-a', change, error)

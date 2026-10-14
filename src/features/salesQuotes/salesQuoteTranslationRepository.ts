@@ -1,5 +1,6 @@
 import { Timestamp, collection, doc, getDoc, onSnapshot, runTransaction, serverTimestamp, writeBatch, type Unsubscribe } from 'firebase/firestore'
-import { firestore } from '../../firebase/firebase'
+import { httpsCallable } from 'firebase/functions'
+import { firestore, firebaseFunctions } from '../../firebase/firebase'
 import type { RfqItem } from '../rfqs/rfqItemRepository'
 
 export type SalesQuoteTranslationStatus = 'draft' | 'confirmed'
@@ -19,12 +20,25 @@ export interface SalesQuoteTranslationItem {
   updatedAt: Timestamp | null
 }
 export interface SalesQuoteTranslation { rfqId: string; status: SalesQuoteTranslationStatus; createdAt: Timestamp | null; updatedAt: Timestamp | null; confirmedAt: Timestamp | null }
+export interface SalesQuoteExportState {
+  revision: number; digest: string; status: 'draft' | 'failed' | 'sent' | 'sending' | 'uncertain'
+  editing?: boolean; operation?: 'create' | 'update'; updateTarget?: { id: number; number: string } | null
+  result?: { id: number; number: string } | null; previousResult?: { id: number; number: string } | null
+}
 const text = (value: unknown) => typeof value === 'string' ? value : ''
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) ? value : 0
 const timestamp = (value: unknown) => value instanceof Timestamp ? value : null
 const quoteRef = (rfqId: string) => doc(firestore, 'salesQuotes', rfqId)
 const itemRef = (rfqId: string, itemId: string) => doc(firestore, 'salesQuotes', rfqId, 'items', itemId)
 const exportRef = (rfqId: string) => doc(firestore, 'salesQuotes', rfqId, 'freeeExports', 'current')
+
+export function subscribeSalesQuoteExportState(rfqId: string, change: (value: SalesQuoteExportState | null) => void, fail: (error: Error) => void): Unsubscribe {
+  return onSnapshot(exportRef(rfqId), snapshot => change(snapshot.exists() ? snapshot.data() as SalesQuoteExportState : null), fail)
+}
+
+export async function startSalesQuoteRevision(rfqId: string, saved: SalesQuoteExportState, customerPresented: boolean): Promise<void> {
+  await httpsCallable(firebaseFunctions, 'startSalesQuoteRevision')({ rfqId, expectedRevision: saved.revision, digest: saved.digest, customerPresented })
+}
 
 function readItem(id: string, value: Record<string, unknown>): SalesQuoteTranslationItem {
   return { id, rfqId: text(value.rfqId), rfqItemId: text(value.rfqItemId), lineNo: number(value.lineNo), partNumber: text(value.partNumber), quantity: number(value.quantity), unit: text(value.unit), originalDescription: text(value.originalDescription), translatedDescription: text(value.translatedDescription), outputDescription: text(value.outputDescription), confirmedAt: timestamp(value.confirmedAt), createdAt: timestamp(value.createdAt), updatedAt: timestamp(value.updatedAt) }
@@ -43,7 +57,8 @@ export function subscribeSalesQuote(rfqId: string, change: (quote: SalesQuoteTra
 }
 
 async function assertTranslationEditable(rfqId: string): Promise<void> {
-  if ((await getDoc(exportRef(rfqId))).exists()) throw new Error('販売見積の保存版があるため明細を変更できません。保存済みの見積内容を保護しています。')
+  const saved = await getDoc(exportRef(rfqId))
+  if (saved.exists() && !(saved.get('editing') === true && saved.get('status') === 'draft')) throw new Error('「改訂版を作成して編集」から編集を開始してください。保存済みの見積は履歴に保持します。')
 }
 
 export async function prepareSalesQuoteTranslation(rfqId: string, rfqItems: RfqItem[], quote: SalesQuoteTranslation | null, existingItems: SalesQuoteTranslationItem[]): Promise<void> {

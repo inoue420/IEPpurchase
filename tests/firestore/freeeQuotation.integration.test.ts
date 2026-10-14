@@ -10,9 +10,9 @@ const functionRequire = createRequire(new URL('../../functions/package.json', im
 const { initializeApp, deleteApp } = functionRequire('firebase-admin/app') as typeof import('../../functions/node_modules/firebase-admin/lib/app')
 const { getFirestore, Timestamp } = functionRequire('firebase-admin/firestore') as typeof import('../../functions/node_modules/firebase-admin/lib/firestore')
 const { SecretManagerServiceClient } = functionRequire('@google-cloud/secret-manager') as typeof import('../../functions/node_modules/@google-cloud/secret-manager')
-interface Saved { revision: number; digest: string; preview: QuotePreview; payload: FreeeQuotePayload; status: string; marker: string }
+interface Saved { revision: number; digest: string; preview: QuotePreview; payload: FreeeQuotePayload; status: string; marker: string; editing?: boolean; operation?: string }
 type Callable = { run: (request: { auth?: { uid: string }; data: Record<string, unknown> }) => Promise<Saved & { result?: { id: number }; status: string }> }
-const { saveSalesQuotePricing, sendFreeeQuotation, reconcileFreeeQuotation } = functionRequire('./lib/freeeQuotation.js') as Record<string, Callable>
+const { saveSalesQuotePricing, sendFreeeQuotation, reconcileFreeeQuotation, startSalesQuoteRevision } = functionRequire('./lib/freeeQuotation.js') as Record<string, Callable>
 const { freeeTokenMetadata, FREEE_TOKEN_METADATA_PATH } = functionRequire('./lib/freeeTokenMetadata.js') as {
   freeeTokenMetadata: (parent: string) => OAuthTokenMetadataStore
   FREEE_TOKEN_METADATA_PATH: string
@@ -32,7 +32,7 @@ const run = (call: Callable, data: Record<string, unknown>, uid = 'user') => cal
 const save = (expectedRevision = 0) => run(saveSalesQuotePricing, { settings, expectedRevision })
 const send = (saved: Saved) => run(sendFreeeQuotation, { revision: saved.revision, digest: saved.digest, confirm: true })
 const ref = () => db.doc('salesQuotes/rfq/freeeExports/current')
-const successfulResponse = (saved: Saved) => ({ quotation: { id: 99, company_id: 456, partner_id: 123, memo: saved.marker, quotation_number: 'Q-99', lines: saved.payload.lines, total_amount: 220, amount_tax: 20, report_url: 'https://invoice.freee.co.jp/reports/99' } })
+const successfulResponse = (saved: Saved) => ({ quotation: { ...saved.payload, id: 99, quotation_number: 'Q-99', lines: saved.payload.lines, total_amount: saved.preview.total, amount_tax: saved.preview.tax, sending_status: 'unsent', cancel_status: 'uncanceled', report_url: 'https://invoice.freee.co.jp/reports/99' } })
 
 beforeAll(async () => {
   const hostValue = process.env.FIRESTORE_EMULATOR_HOST
@@ -140,7 +140,7 @@ describe('freee numeric token version metadata integration', () => {
 
 describe('freee quotation transaction and authorization integration', () => {
   it('requires authentication and explicit send confirmation before credentials or HTTP', async () => {
-    for (const call of [saveSalesQuotePricing, sendFreeeQuotation, reconcileFreeeQuotation]) await expect(call.run({ data: {} })).rejects.toMatchObject({ code: 'unauthenticated' })
+    for (const call of [saveSalesQuotePricing, sendFreeeQuotation, reconcileFreeeQuotation, startSalesQuoteRevision]) await expect(call.run({ data: {} })).rejects.toMatchObject({ code: 'unauthenticated' })
     await expect(run(sendFreeeQuotation, { revision: 1, digest: 'x' })).rejects.toMatchObject({ code: 'invalid-argument' })
     expect(fetch).not.toHaveBeenCalled()
   })
@@ -152,6 +152,20 @@ describe('freee quotation transaction and authorization integration', () => {
     expect(second.preview.lines[0]).toMatchObject({ originalDescription: 'ボルト', quantity: 2 })
     expect((await ref().collection('revisions').doc('1').get()).get('preview.total')).toBe(220)
     await expect(save(1)).rejects.toMatchObject({ code: 'aborted' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it('validates the new cost divisor on the server while preserving the previous saved revision', async () => {
+    await save()
+    const previous = (await ref().collection('revisions').doc('1').get()).data()
+    const price = { ...settings.prices[0], purchaseAmount: '1000', shippingFee: '100', margin: '1.2', unitPrice: '1400' }
+    for (const invalid of [{ ...price, unitPrice: '1300' }, { ...price, margin: '2' }, { ...price, margin: '2.1' }]) {
+      await expect(run(saveSalesQuotePricing, { expectedRevision: 1, settings: { ...settings, prices: [invalid] } })).rejects.toMatchObject({ code: 'invalid-argument' })
+    }
+    expect((await ref().get()).get('revision')).toBe(1)
+    const next = await run(saveSalesQuotePricing, { expectedRevision: 1, settings: { ...settings, prices: [price] } })
+    expect(next.preview).toMatchObject({ subtotal: 2800, tax: 280, total: 3080 })
+    expect(next.payload.lines[0]).toMatchObject({ unit_price: '1400', tax_rate: 10 })
+    expect((await ref().collection('revisions').doc('1').get()).data()).toEqual(previous)
     expect(fetch).not.toHaveBeenCalled()
   })
   it('rejects unconfirmed lines and client-provided altered quantities or extra lines', async () => {
@@ -333,5 +347,154 @@ describe('freee partner name selection', () => {
     await expect(run(searchFreeePartners, {})).rejects.toThrow('再認可')
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}')))
     await expect(run(searchFreeePartners, {})).rejects.toMatchObject({ code: 'unavailable' })
+  })
+})
+
+describe('quotation revisions and updates', () => {
+  const revise = (saved: Saved, customerPresented = false) => run(startSalesQuoteRevision, {
+    expectedRevision: saved.revision, digest: saved.digest, customerPresented,
+  })
+  async function sentQuote() {
+    const saved = await save()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(successfulResponse(saved)))))
+    await send(saved)
+    return saved
+  }
+  async function confirmAndSave(expectedRevision = 1) {
+    await db.doc('salesQuotes/rfq').update({ status: 'confirmed', confirmedAt: Timestamp.now() })
+    await db.doc('salesQuotes/rfq/items/item').update({ outputDescription: 'Revised bolt', confirmedAt: Timestamp.now() })
+    return save(expectedRevision)
+  }
+  it('reopens a saved draft, blocks its old send preview and preserves its immutable revision', async () => {
+    const original = await save(), snapshot = (await ref().collection('revisions').doc('1').get()).data()
+    await revise(original)
+    expect((await ref().get()).data()).toMatchObject({ editing: true, status: 'draft', operation: 'create' })
+    expect((await db.doc('salesQuotes/rfq').get()).get('status')).toBe('draft')
+    expect((await db.doc('salesQuotes/rfq/items/item').get()).get('confirmedAt')).toBe(null)
+    await expect(send(original)).rejects.toThrow('編集中')
+    const next = await confirmAndSave()
+    expect(next.revision).toBe(2)
+    expect(next.editing).toBe(false)
+    expect(next.payload.lines[0].description).toBe('ACME A-1 Revised bolt')
+    expect((await ref().collection('revisions').doc('1').get()).data()).toEqual(snapshot)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it('updates the same ID with one PUT, never POST, even under concurrent sends and repeated revisions', async () => {
+    const original = await sentQuote(), snapshot = (await ref().collection('revisions').doc('1').get()).data()
+    await revise(original)
+    expect((await ref().get()).get('lastSentRevision')).toBe(1)
+    const next = await confirmAndSave()
+    const http = vi.fn(async (url: string, init: RequestInit) => {
+      if (!init.method) return new Response(JSON.stringify(successfulResponse(original)))
+      expect(url).toBe('https://api.freee.co.jp/iv/quotations/99')
+      expect(init.method).toBe('PUT')
+      expect(JSON.parse(String(init.body))).toMatchObject({ memo: next.marker, lines: next.payload.lines })
+      return new Response(JSON.stringify(successfulResponse(next)))
+    })
+    vi.stubGlobal('fetch', http)
+    const sends = await Promise.allSettled([send(next), send(next)])
+    expect(sends.some(result => result.status === 'fulfilled')).toBe(true)
+    expect(http.mock.calls.filter(([, init]) => init.method === 'PUT')).toHaveLength(1)
+    await send(next)
+    expect(http).toHaveBeenCalledTimes(2)
+    expect((await ref().get()).data()).toMatchObject({ status: 'sent', result: { id: 99 }, lastSentRevision: 2 })
+    expect((await ref().collection('revisions').doc('1').get()).data()).toEqual(snapshot)
+    const events = await ref().collection('events').get()
+    expect(events.docs.filter(event => event.get('action') === 'sent').map(event => [event.get('revision'), event.get('result.id')]).sort()).toEqual([[1, 99], [2, 99]])
+    await revise(next)
+    const third = await confirmAndSave(2)
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => new Response(JSON.stringify(successfulResponse(init.method ? third : next)))))
+    await send(third)
+    expect((await ref().get()).get('result.id')).toBe(99)
+  })
+  it('creates a separate revised quotation only after explicit customer-presentation selection', async () => {
+    const original = await sentQuote()
+    await expect(run(startSalesQuoteRevision, { expectedRevision: 1, digest: original.digest })).rejects.toMatchObject({ code: 'invalid-argument' })
+    await revise(original, true)
+    const next = await confirmAndSave()
+    expect((await ref().get()).data()).toMatchObject({ operation: 'create', updateTarget: null, previousResult: { id: 99 } })
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://api.freee.co.jp/iv/quotations'); expect(init.method).toBe('POST')
+      return new Response(JSON.stringify({ quotation: { ...successfulResponse(next).quotation, id: 100, quotation_number: 'Q-100' } }))
+    }))
+    await send(next)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect((await ref().get()).get('result.id')).toBe(100)
+    expect((await ref().get()).get('previousResult.id')).toBe(99)
+    expect((await ref().collection('revisions').doc('1').get()).get('payload.memo')).toBe(original.marker)
+  })
+  it('refuses concurrent or stale revision requests and rejects editing during unknown transfers', async () => {
+    const original = await sentQuote()
+    const starts = await Promise.allSettled([revise(original), revise(original)])
+    expect(starts.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    const next = await confirmAndSave()
+    await expect(revise(original)).rejects.toMatchObject({ code: 'aborted' })
+    for (const status of ['sending', 'uncertain']) {
+      await ref().update({ status })
+      await expect(revise(next)).rejects.toMatchObject({ code: 'failed-precondition' })
+    }
+  })
+  it('detects manual freee changes, sent/cancelled state and inaccessible IDs before any PUT or POST', async () => {
+    const original = await sentQuote()
+    await revise(original)
+    const next = await confirmAndSave()
+    for (const change of [{ subject: 'Manual subject' }, { quotation_note: 'Manual note' }, { lines: [] }, { sending_status: 'sent' }, { cancel_status: 'canceled' }, { sending_status: null }, { template_id: 999 }]) {
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ quotation: { ...successfulResponse(original).quotation, ...change } }))))
+      expect((await send(next)).status).toBe('failed')
+      expect(fetch).toHaveBeenCalledTimes(1)
+      expect((await ref().get()).get('result')).toBe(null)
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 404 })))
+    expect((await send(next)).status).toBe('failed')
+    expect(fetch).toHaveBeenCalledTimes(1)
+    // A customer-presented quotation can be switched to a deliberate new revision.
+    await revise(next, true)
+    expect((await ref().get()).get('updateTarget')).toBe(null)
+  })
+  it('preserves freee template, addresses and contacts when updating', async () => {
+    const original = await save()
+    const extra = { template_id: 17, branch_no: 0, partner_address_zipcode: '100-0001', partner_contact_name: 'Contact', company_contact_name: 'Owner' }
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ quotation: { ...successfulResponse(original).quotation, ...extra } }))))
+    await send(original); await revise(original)
+    const next = await confirmAndSave()
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      if (init.method) expect(JSON.parse(String(init.body))).toMatchObject(extra)
+      return new Response(JSON.stringify({ quotation: { ...successfulResponse(init.method ? next : original).quotation, ...extra } }))
+    }))
+    expect((await send(next)).status).toBe('sent')
+  })
+  it('keeps PUT timeouts locked and reconciles only the original ID and new revision marker', async () => {
+    const original = await sentQuote()
+    await revise(original)
+    const next = await confirmAndSave()
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      if (!init.method) return new Response(JSON.stringify(successfulResponse(original)))
+      throw new Error('timeout after PUT')
+    }))
+    expect((await send(next)).status).toBe('uncertain')
+    expect(fetch).toHaveBeenCalledTimes(2)
+    await expect(send(next)).rejects.toMatchObject({ code: 'failed-precondition' })
+    await expect(revise(next)).rejects.toMatchObject({ code: 'failed-precondition' })
+    await ref().update({ startedAt: Timestamp.fromMillis(Date.now() - 121_000) })
+    await expect(run(reconcileFreeeQuotation, { quotationId: 100 })).rejects.toMatchObject({ code: 'failed-precondition' })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(successfulResponse(original)))))
+    await expect(run(reconcileFreeeQuotation, { quotationId: 99 })).rejects.toMatchObject({ code: 'failed-precondition' })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(successfulResponse(next)))))
+    expect((await run(reconcileFreeeQuotation, { quotationId: 99 })).status).toBe('sent')
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+  it('rejects altered update targets, company changes and quotation numbers instead of falling back to POST', async () => {
+    const original = await sentQuote()
+    await revise(original)
+    await db.doc('salesQuotes/rfq').update({ status: 'confirmed' })
+    await db.doc('salesQuotes/rfq/items/item').update({ confirmedAt: Timestamp.now() })
+    await expect(run(saveSalesQuotePricing, { expectedRevision: 1, settings: { ...settings, quotationNumber: 'OTHER' } })).rejects.toThrow('番号')
+    await expect(run(saveSalesQuotePricing, { expectedRevision: 1, settings: { ...settings, partnerId: '999' } })).rejects.toThrow('取引先')
+    await db.doc('rfqs/rfq').update({ customerId: 'other' })
+    await expect(save(1)).rejects.toThrow('顧客')
+    await db.doc('rfqs/rfq').update({ customerId: 'customer' })
+    const next = await save(1)
+    await ref().update({ updateTarget: null })
+    await expect(send(next)).rejects.toThrow('新規作成は行いません')
   })
 })

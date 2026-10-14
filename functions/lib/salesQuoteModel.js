@@ -39,14 +39,16 @@ function optionalMoney(value, label) {
 function calculateSalesUnitPrice(purchaseAmount, shippingFee, margin) {
     if (!purchaseAmount)
         return '';
-    const purchase = Number(purchaseAmount), shipping = shippingFee === '' ? 0 : Number(shippingFee), multiplier = Number(margin);
+    const purchase = Number(purchaseAmount), shipping = shippingFee === '' ? 0 : Number(shippingFee), marginValue = Number(margin);
     if (!/^\d{1,10}$/.test(purchaseAmount) || purchase > 1_000_000_000)
         return '';
     if (shippingFee !== '' && (!/^\d{1,10}$/.test(shippingFee) || shipping > 1_000_000_000))
         return '';
-    if (!/^\d+(\.\d{1,3})?$/.test(margin) || multiplier <= 0 || multiplier > 100)
+    if (!/^\d+(\.\d{1,3})?$/.test(margin) || marginValue <= 0 || marginValue >= 2)
         return '';
-    return String(Math.round(((purchase + shipping) * multiplier) / 100) * 100);
+    // Use integer thousandths so decimal subtraction does not shift rounding ties.
+    const divisor = 2000 - Math.round(marginValue * 1000);
+    return String(Math.round(((purchase + shipping) * 1000) / (divisor * 100)) * 100);
 }
 function parseQuoteSettings(value) {
     const d = record(value);
@@ -65,13 +67,13 @@ function parseQuoteSettings(value) {
         const purchaseAmount = optionalMoney(p.purchaseAmount, '購入金額');
         const shippingFee = optionalMoney(p.shippingFee, '送料');
         const margin = p.margin === undefined ? '1.2' : text(p.margin, 'マージン', 8);
-        if (!/^\d+(\.\d{1,3})?$/.test(margin) || Number(margin) <= 0 || Number(margin) > 100)
-            throw new Error('マージンは0より大きく100以下、小数3桁以内で入力してください。');
+        if (!/^\d+(\.\d{1,3})?$/.test(margin) || Number(margin) <= 0 || Number(margin) >= 2)
+            throw new Error('マージンは0より大きく2未満、小数3桁以内で入力してください。');
         const unitPrice = text(p.unitPrice, '販売単価', 14);
         if (!/^\d{1,10}(\.\d{1,3})?$/.test(unitPrice) || Number(unitPrice) > 1_000_000_000)
             throw new Error('販売単価は0〜10億円、小数3桁以内で入力してください。');
         if (purchaseAmount && calculateSalesUnitPrice(purchaseAmount, shippingFee, margin) !== unitPrice)
-            throw new Error('販売単価は（購入金額＋送料）×マージンを100円単位に丸めた金額と一致させてください。');
+            throw new Error('販売単価は（購入金額＋送料）÷（2−マージン）を100円単位に丸めた金額と一致させてください。');
         const taxRate = choice(p.taxRate, [0, 8, 10], '税率');
         if (typeof p.reducedTaxRate !== 'boolean' || (p.reducedTaxRate && taxRate !== 8))
             throw new Error('軽減税率は8%のみ指定できます。');

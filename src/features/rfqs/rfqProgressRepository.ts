@@ -21,7 +21,8 @@ export function subscribeRfqProgress(rfqId: string, onChange: (progress: RfqProg
     publish()
   }, fail)
   const unsubscribeExport = onSnapshot(doc(firestore, 'salesQuotes', rfqId, 'freeeExports', 'current'), snapshot => {
-    freeeTransferred = snapshot.data()?.status === 'sent'
+    const data = snapshot.data()
+    freeeTransferred = data?.status === 'sent' || (typeof data?.lastSentRevision === 'number' && data.lastSentRevision > 0)
     publish()
   }, fail)
   return () => { active = false; unsubscribeItems(); unsubscribeExport() }

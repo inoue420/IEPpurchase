@@ -204,12 +204,14 @@ service cloud.firestore {
           && ((d.status == 'draft' && d.confirmedAt == null) || (d.status == 'confirmed' && d.confirmedAt == request.time));
       }
       function salesQuoteTranslationEditable() {
-        return !exists(/databases/$(database)/documents/salesQuotes/$(rfqId)/freeeExports/current);
+        let path = /databases/$(database)/documents/salesQuotes/$(rfqId)/freeeExports/current;
+        return !exists(path) || (get(path).data.get('editing', false) == true && get(path).data.status == 'draft');
       }
       allow get, list: if isSignedIn();
       allow create: if isSignedIn() && validSalesQuote(request.resource.data)
         && request.resource.data.status == 'draft' && request.resource.data.createdAt == request.time;
       allow update: if isSignedIn() && validSalesQuote(request.resource.data)
+        && salesQuoteTranslationEditable()
         && request.resource.data.createdAt == resource.data.createdAt
         && ((resource.data.status == 'draft' && request.resource.data.status in ['draft', 'confirmed'])
           || (resource.data.status == 'confirmed' && request.resource.data.status == 'draft' && salesQuoteTranslationEditable()));
@@ -222,16 +224,21 @@ service cloud.firestore {
             && d.keys().hasOnly(['rfqId', 'rfqItemId', 'lineNo', 'partNumber', 'quantity', 'unit', 'originalDescription', 'translatedDescription', 'outputDescription', 'confirmedAt', 'createdAt', 'updatedAt'])
             && d.rfqId == rfqId && d.rfqItemId == itemId && exists(/databases/$(database)/documents/rfqs/$(rfqId)/items/$(itemId))
             && source.archivedAt == null && source.status != 'cancelled'
-            && d.lineNo == source.lineNo && d.partNumber == source.partNumber && d.quantity == source.quantity && d.unit == source.unit
-            && d.originalDescription == source.originalDescription && d.translatedDescription == source.translatedDescription
+            && ((d.lineNo == source.lineNo && d.partNumber == source.partNumber && d.quantity == source.quantity && d.unit == source.unit
+              && d.originalDescription == source.originalDescription && d.translatedDescription == source.translatedDescription)
+              || (resource != null && d.lineNo == resource.data.lineNo && d.partNumber == resource.data.partNumber
+                && d.quantity == resource.data.quantity && d.unit == resource.data.unit
+                && d.originalDescription == resource.data.originalDescription && d.translatedDescription == resource.data.translatedDescription))
             && d.outputDescription is string && d.outputDescription.size() <= 5000
             && d.createdAt is timestamp && d.updatedAt == request.time && (d.confirmedAt == null || d.confirmedAt == request.time);
         }
         allow get, list: if isSignedIn();
         allow create: if isSignedIn() && validSalesQuoteItem(request.resource.data)
+          && salesQuoteTranslationEditable()
           && request.resource.data.createdAt == request.time && request.resource.data.confirmedAt == null
           && getAfter(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft';
         allow update: if isSignedIn() && validSalesQuoteItem(request.resource.data)
+          && salesQuoteTranslationEditable()
           && request.resource.data.createdAt == resource.data.createdAt
           && ((get(/databases/$(database)/documents/salesQuotes/$(rfqId)).data.status == 'draft'
               && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['outputDescription', 'updatedAt']) && request.resource.data.confirmedAt == null)

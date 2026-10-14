@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { buildQuotePreview, calculateSalesUnitPrice, parseQuoteSettings, toFreeePayload, type ConfirmedLine } from '../../../functions/src/salesQuoteModel'
 import { createFreeeQuotation, freeeResult } from '../../../functions/src/freeeQuotationTransport'
+import { recalculateSalesQuoteSettings } from './salesQuoteSettingsEqual'
 
 const line: ConfirmedLine = { rfqItemId: 'a', lineNo: 1, manufacturerName: 'ACME', partNumber: 'B-01', quantity: 2, unit: 'pcs', originalDescription: '六角ボルト', translatedDescription: 'Hex bolt', outputDescription: 'Hex bolt\nStainless steel' }
 const settings = (change: Record<string, unknown> = {}) => parseQuoteSettings({ partnerId: '123', quotationDate: '2026-09-14', expirationDate: '', subject: 'Quotation', quotationNumber: '', partnerTitle: '御中', taxEntryMethod: 'out', taxFraction: 'omit', lineAmountFraction: 'omit', note: '', translationsReviewed: false, prices: [{ rfqItemId: 'a', unitPrice: '100.125', taxRate: 10, reducedTaxRate: false }], ...change })
@@ -9,19 +10,51 @@ const payload = () => toFreeePayload(preview(), 456, 'IEPpurchase:rfq:v1')
 const response = (change: Record<string, unknown> = {}) => ({ quotation: { id: 1, quotation_number: 'Q-1', company_id: 456, partner_id: 123, total_amount: 220, amount_tax: 20, lines: payload().lines, report_url: 'https://invoice.freee.co.jp/reports/1', ...change } })
 
 describe('sales quote calculations and immutable translated lines', () => {
-  it('calculates a selling price from cost, blank shipping and margin rounded to 100 yen', () => {
-    expect(calculateSalesUnitPrice('1234', '', '1.2')).toBe('1500')
-    expect(calculateSalesUnitPrice('1234', '100', '1.2')).toBe('1600')
+  it.each([
+    ['1234', '', '1.2', '1500'],
+    ['1234', '100', '1.2', '1700'],
+    ['1997', '', '1.2', '2500'],
+    ['31999', '', '1.2', '40000'],
+    ['2588', '', '1.2', '3200'],
+    ['1000', '', '1.2', '1300'],
+    ['25', '', '1.9', '300'],
+    ['1000', '100', '1', '1100'],
+    ['1000', '', '0.5', '700'],
+    ['1000', '', '1.999', '1000000'],
+    ['0', '', '1.2', '0'],
+  ])('divides cost %s plus shipping %s by (2 - %s), rounding to %s yen', (purchase, shipping, margin, expected) => {
+    expect(calculateSalesUnitPrice(purchase, shipping, margin)).toBe(expected)
+  })
+  it('rejects margins that produce a zero or negative divisor and other invalid inputs', () => {
     expect(calculateSalesUnitPrice('', '', '1.2')).toBe('')
+    for (const margin of ['0', '-1', '2', '2.001', '100', '', 'NaN', '1.0001']) {
+      expect(calculateSalesUnitPrice('1000', '', margin)).toBe('')
+      expect(() => settings({ prices: [{ rfqItemId: 'a', purchaseAmount: '1000', shippingFee: '', margin, unitPrice: '1300', taxRate: 10, reducedTaxRate: false }] })).toThrow('マージン')
+    }
+    expect(calculateSalesUnitPrice('1000', '-1', '1.2')).toBe('')
+    expect(calculateSalesUnitPrice('1000000001', '', '1.2')).toBe('')
+    expect(() => settings({ prices: [{ rfqItemId: 'a', purchaseAmount: '1000000000', shippingFee: '', margin: '1.999', unitPrice: '1000000000000', taxRate: 10, reducedTaxRate: false }] })).toThrow('販売単価')
+  })
+  it('recalculates a legacy draft for editing without changing its saved prices or manual prices', () => {
+    const old = settings({ prices: [{ rfqItemId: 'a', purchaseAmount: '', shippingFee: '', margin: '1.2', unitPrice: '1200', taxRate: 10, reducedTaxRate: false }, { rfqItemId: 'b', unitPrice: '80', taxRate: 8, reducedTaxRate: false }] })
+    old.prices[0].purchaseAmount = '1000'
+    const snapshot = structuredClone(old)
+    const edited = recalculateSalesQuoteSettings(old)
+    expect(edited.prices[0].unitPrice).toBe('1300')
+    expect(edited.prices[1].unitPrice).toBe('80')
+    expect(parseQuoteSettings(edited)).toEqual(edited)
+    expect(old).toEqual(snapshot)
   })
   it('keeps cost inputs internal and sends only the calculated unit price to freee', () => {
-    const configured = settings({ prices: [{ rfqItemId: 'a', purchaseAmount: '1000', shippingFee: '', margin: '1.2', unitPrice: '1200', taxRate: 10, reducedTaxRate: false }] })
-    const data = toFreeePayload(buildQuotePreview(configured, [line]), 456, 'marker')
-    expect(data.lines[0]).toMatchObject({ unit_price: '1200' })
+    const configured = settings({ prices: [{ rfqItemId: 'a', purchaseAmount: '1000', shippingFee: '', margin: '1.2', unitPrice: '1300', taxRate: 10, reducedTaxRate: false }] })
+    const calculated = buildQuotePreview(configured, [line])
+    expect(calculated).toMatchObject({ subtotal: 2600, tax: 260, total: 2860 })
+    const data = toFreeePayload(calculated, 456, 'marker')
+    expect(data.lines[0]).toMatchObject({ unit_price: '1300' })
     expect(data.lines[0]).not.toHaveProperty('purchaseAmount')
     expect(data.lines[0]).not.toHaveProperty('shippingFee')
     expect(data.lines[0]).not.toHaveProperty('margin')
-    expect(() => settings({ prices: [{ rfqItemId: 'a', purchaseAmount: '1000', shippingFee: '', margin: '1.2', unitPrice: '1300', taxRate: 10, reducedTaxRate: false }] })).toThrow()
+    expect(() => settings({ prices: [{ rfqItemId: 'a', purchaseAmount: '1000', shippingFee: '', margin: '1.2', unitPrice: '1200', taxRate: 10, reducedTaxRate: false }] })).toThrow('÷（2−マージン）')
   })
   it('preserves source newlines while sending a single-line description without retranslation', () => {
     const original = structuredClone(line), p = preview(), data = payload()

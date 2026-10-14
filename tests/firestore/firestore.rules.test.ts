@@ -460,4 +460,36 @@ describe('sales quote translation re-editing', () => {
     batch.update(doc(db, 'salesQuotes/existing/items/existing'), { confirmedAt: null, updatedAt: serverTimestamp() })
     await assertFails(batch.commit())
   })
+
+  it('allows server-authorized revision editing and protects the original snapshot after RFQ changes', async () => {
+    const db = await createAndConfirm()
+    await env.withSecurityRulesDisabled(async context => {
+      await setDoc(doc(context.firestore(), 'salesQuotes/existing/freeeExports/current'), { status: 'draft', editing: true })
+    })
+    const batch = writeBatch(db)
+    batch.update(doc(db, 'salesQuotes/existing'), { status: 'draft', confirmedAt: null, updatedAt: serverTimestamp() })
+    batch.update(doc(db, 'salesQuotes/existing/items/existing'), { confirmedAt: null, updatedAt: serverTimestamp() })
+    await assertSucceeds(batch.commit())
+    await assertSucceeds(updateDoc(doc(db, 'rfqs/existing/items/existing'), { translatedDescription: 'New RFQ translation', updatedAt: serverTimestamp() }))
+    await assertSucceeds(updateDoc(doc(db, 'salesQuotes/existing/items/existing'), { outputDescription: 'Corrected old snapshot', updatedAt: serverTimestamp() }))
+    await assertFails(updateDoc(doc(db, 'salesQuotes/existing/items/existing'), { quantity: 99, updatedAt: serverTimestamp() }))
+    const confirm = writeBatch(db)
+    confirm.update(doc(db, 'salesQuotes/existing'), { status: 'confirmed', confirmedAt: serverTimestamp(), updatedAt: serverTimestamp() })
+    confirm.update(doc(db, 'salesQuotes/existing/items/existing'), { confirmedAt: serverTimestamp(), updatedAt: serverTimestamp() })
+    await assertSucceeds(confirm.commit())
+  })
+
+  it('denies forging the revision flag or editing while a transfer is locked', async () => {
+    const db = await createAndConfirm(), current = doc(db, 'salesQuotes/existing/freeeExports/current')
+    for (const status of ['draft', 'sending', 'uncertain', 'sent']) {
+      await env.withSecurityRulesDisabled(async context => {
+        await setDoc(doc(context.firestore(), 'salesQuotes/existing/freeeExports/current'), { status, editing: status !== 'draft' })
+      })
+      await assertFails(updateDoc(current, { editing: true, status: 'draft' }))
+      const batch = writeBatch(db)
+      batch.update(doc(db, 'salesQuotes/existing'), { status: 'draft', confirmedAt: null, updatedAt: serverTimestamp() })
+      batch.update(doc(db, 'salesQuotes/existing/items/existing'), { confirmedAt: null, updatedAt: serverTimestamp() })
+      await assertFails(batch.commit())
+    }
+  })
 })

@@ -4,7 +4,7 @@ import { SecretManagerServiceClient } from '@google-cloud/secret-manager'
 import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
 import { hasUnsupportedFreeeDescription, buildQuotePreview, parseQuoteSettings, record, toFreeePayload, type ConfirmedLine, type QuotePreview, type FreeeQuotePayload } from './salesQuoteModel'
-import { createFreeeQuotation, FreeeRequestError, freeeResult, type FreeeResult } from './freeeQuotationTransport'
+import { createFreeeQuotation, updateFreeeQuotation, FreeeRequestError, freeeResult, type FreeeResult, type FreeeUpdateTarget } from './freeeQuotationTransport'
 import { readOAuthTokenPayload } from './oauthTokenStore'
 import { freeeTokenMetadata } from './freeeTokenMetadata'
 
@@ -39,12 +39,53 @@ interface ExportRecord {
   preview: QuotePreview; companyId: number; customerName: string; customerId: string
   digest: string; marker: string; payload: FreeeQuotePayload; attempt: number
   result: FreeeResult | null; error: string; startedAt?: Timestamp
+  editing?: boolean; operation?: 'create' | 'update'; updateTarget?: FreeeUpdateTarget | null
+  previousResult?: FreeeResult | null; lastSentRevision?: number; customerPresented?: boolean
 }
 function exportRef(rfqId: string) { return getFirestore().doc(`salesQuotes/${rfqId}/freeeExports/current`) }
 function mutable(status: ExportRecord['status']) { return status === 'draft' || status === 'failed' }
 function eventData(userId: string, action: string, revision: number, values: Record<string, unknown> = {}) {
   return { action, revision, userId, createdAt: FieldValue.serverTimestamp(), ...values }
 }
+
+export const startSalesQuoteRevision = onCall(options, async request => {
+  if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
+  const data = input(request.data), rfqId = id(data.rfqId)
+  if (!Number.isSafeInteger(data.expectedRevision) || typeof data.digest !== 'string') throw new HttpsError('invalid-argument', '編集元の保存版が不正です。')
+  const db = getFirestore(), ref = exportRef(rfqId), userId = request.auth.uid
+  await db.runTransaction(async transaction => {
+    const [current, quote, items, rfq] = await Promise.all([
+      transaction.get(ref), transaction.get(db.doc(`salesQuotes/${rfqId}`)),
+      transaction.get(db.collection(`salesQuotes/${rfqId}/items`)), transaction.get(db.doc(`rfqs/${rfqId}`)),
+    ])
+    const previous = current.data() as ExportRecord | undefined
+    if (!previous || previous.revision !== data.expectedRevision || previous.digest !== data.digest) throw new HttpsError('aborted', '保存版が更新されました。最新の内容を読み直してください。')
+    if (!mutable(previous.status) && previous.status !== 'sent') throw new HttpsError('failed-precondition', '送信中または結果不明のため編集できません。freeeの転記結果を先に照合してください。')
+    if (quote.get('status') !== 'confirmed' || items.empty || items.size > 100 || !rfq.exists || rfq.get('status') === 'cancelled') throw new HttpsError('failed-precondition', '有効なRFQと確定済み明細が必要です。')
+    const sent = previous.status === 'sent'
+    const choosesMode = sent || !!previous.updateTarget
+    if (choosesMode && typeof data.customerPresented !== 'boolean') throw new HttpsError('invalid-argument', '顧客へ見積を提示済みか選択してください。')
+    let updateTarget = previous.updateTarget ?? null
+    if (sent) {
+      if (!previous.result || !Number.isSafeInteger(previous.result.id) || previous.result.id <= 0) throw new HttpsError('failed-precondition', '前回のfreee見積書IDを確認できません。')
+      updateTarget = { id: previous.result.id, number: previous.result.number, payload: previous.payload,
+        total: previous.preview.total, tax: previous.preview.tax,
+        ...(previous.result.contentDigest ? { contentDigest: previous.result.contentDigest } : {}) }
+    }
+    if (choosesMode && data.customerPresented === true) updateTarget = null
+    const operation = updateTarget ? 'update' : 'create'
+    transaction.update(ref, { status: 'draft', editing: true, operation, updateTarget, result: null, error: '',
+      previousResult: sent ? previous.result : previous.previousResult ?? null,
+      lastSentRevision: sent ? previous.revision : previous.lastSentRevision ?? 0,
+      customerPresented: choosesMode ? data.customerPresented : previous.customerPresented ?? false,
+      updatedAt: FieldValue.serverTimestamp(), updatedBy: userId })
+    transaction.update(quote.ref, { status: 'draft', confirmedAt: null, updatedAt: FieldValue.serverTimestamp() })
+    items.docs.forEach(item => transaction.update(item.ref, { confirmedAt: null, updatedAt: FieldValue.serverTimestamp() }))
+    transaction.create(ref.collection('events').doc(), eventData(userId, 'revision_started', previous.revision,
+      { operation, previousResult: sent ? previous.result : previous.previousResult ?? null, customerPresented: data.customerPresented ?? false }))
+  })
+  return { editing: true }
+})
 
 export const searchFreeePartners = onCall(options, async request => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
@@ -84,6 +125,9 @@ export const saveSalesQuotePricing = onCall(options, async request => {
     const previous = current.data() as ExportRecord | undefined
     if ((previous?.revision ?? 0) !== expectedRevision) throw new HttpsError('aborted', '別の利用者が更新しました。保存済みの内容を読み直してください。')
     if (previous && !mutable(previous.status)) throw new HttpsError('failed-precondition', '送信開始後の販売見積は変更できません。')
+    if (previous?.updateTarget && (previous.updateTarget.payload.company_id !== companyId || previous.customerId !== rfq.get('customerId'))) throw new HttpsError('failed-precondition', '更新元の事業所・顧客と一致しません。元の接続と案件を確認してください。')
+    if (previous?.updateTarget && Number(settings.partnerId) !== previous.updateTarget.payload.partner_id) throw new HttpsError('failed-precondition', '上書き更新では前回と同じfreee取引先を選択してください。')
+    if (previous?.updateTarget && settings.quotationNumber !== previous.updateTarget.payload.quotation_number && !(settings.quotationNumber === '' && !previous.updateTarget.payload.quotation_number)) throw new HttpsError('failed-precondition', '上書き更新では見積書番号を変更できません。')
     const rfqItems = await Promise.all(items.docs.map(item => transaction.get(db.doc(`rfqs/${rfqId}/items/${item.id}`))))
     const source: ConfirmedLine[] = items.docs.map((item, index) => {
       const d = item.data()
@@ -99,7 +143,9 @@ export const saveSalesQuotePricing = onCall(options, async request => {
     const payload = toFreeePayload(preview, companyId, marker)
     const saved: ExportRecord = { rfqId, revision, status: 'draft', companyId, ...(partnerName ? { partnerName } : {}),
       customerId: rfq.get('customerId'), customerName: rfq.get('customerName'),
-      preview, marker, payload, digest: hash({ payload, preview }), attempt: previous?.attempt ?? 0, result: null, error: '' }
+      preview, marker, payload, digest: hash({ payload, preview }), attempt: previous?.attempt ?? 0, result: null, error: '',
+      editing: false, operation: previous?.updateTarget ? 'update' : 'create', updateTarget: previous?.updateTarget ?? null,
+      previousResult: previous?.previousResult ?? null, lastSentRevision: previous?.lastSentRevision ?? 0, customerPresented: previous?.customerPresented ?? false }
     if (Buffer.byteLength(JSON.stringify(saved), 'utf8') > 750_000) throw new HttpsError('invalid-argument', '保存する原文・翻訳文が大きすぎます。見積を分けてください。')
     transaction.set(ref, { ...saved, createdAt: current.get('createdAt') ?? FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), updatedBy: userId })
     transaction.create(ref.collection('revisions').doc(String(revision)), { ...saved, ...eventData(userId, 'saved', revision) })
@@ -115,22 +161,28 @@ export const sendFreeeQuotation = onCall(options, async request => {
   const ref = exportRef(rfqId), db = getFirestore(), userId = request.auth.uid
   const token = await connection(true)
   const claimed = await db.runTransaction(async transaction => {
-    const [current, rfq] = await Promise.all([transaction.get(ref), transaction.get(db.doc(`rfqs/${rfqId}`))])
+    const [current, rfq, quote] = await Promise.all([transaction.get(ref), transaction.get(db.doc(`rfqs/${rfqId}`)), transaction.get(db.doc(`salesQuotes/${rfqId}`))])
     const saved = current.data() as ExportRecord | undefined
     if (!saved || saved.digest !== data.digest || saved.revision !== data.revision) throw new HttpsError('aborted', '保存版が変更されました。最新のプレビューを確認してください。')
     if (saved.status === 'sent') return { saved, alreadySent: true }
+    if (saved.editing || quote.get('status') !== 'confirmed') throw new HttpsError('failed-precondition', '明細を編集中です。明細を再確定して、新しい販売見積を保存してください。')
     if (!mutable(saved.status)) throw new HttpsError('failed-precondition', '送信中または結果不明のため再作成できません。作成済み見積書IDを照合してください。')
+    if (saved.operation === 'update' && !saved.updateTarget) throw new HttpsError('failed-precondition', '更新対象のfreee見積書IDを確認できません。新規作成は行いません。')
     if (token.companyId !== saved.companyId) throw new HttpsError('failed-precondition', '接続事業所が変わっています。プレビューを保存し直してください。')
     if (!rfq.exists || rfq.get('status') === 'cancelled' || rfq.get('customerId') !== saved.customerId) throw new HttpsError('failed-precondition', 'RFQの状態または顧客が変更されました。')
     if (saved.payload.lines.some(line => hasUnsupportedFreeeDescription(line.description))) throw new HttpsError('failed-precondition', '保存済みの摘要に改行・制御文字が含まれています。「販売見積を保存」で新しい版を作成し、内容を確認してください。')
     transaction.update(ref, { status: 'sending', attempt: saved.attempt + 1, startedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), error: '' })
-    transaction.create(ref.collection('events').doc(), eventData(userId, 'sending', saved.revision, { attempt: saved.attempt + 1, digest: saved.digest }))
+    transaction.create(ref.collection('events').doc(), eventData(userId, 'sending', saved.revision, { attempt: saved.attempt + 1, digest: saved.digest, operation: saved.operation ?? 'create' }))
     return { saved, alreadySent: false }
   })
   if (claimed.alreadySent) return { status: 'sent', result: claimed.saved.result }
   const saved = claimed.saved
   let result: FreeeResult
-  try { result = await createFreeeQuotation(saved.payload, token.accessToken, saved.preview.total, saved.preview.tax) }
+  try {
+    result = saved.operation === 'update' && saved.updateTarget
+      ? await updateFreeeQuotation(saved.updateTarget, saved.payload, token.accessToken, saved.preview.total, saved.preview.tax)
+      : await createFreeeQuotation(saved.payload, token.accessToken, saved.preview.total, saved.preview.tax)
+  }
   catch (error) {
     const known = error instanceof FreeeRequestError
     const status = known && error.retryable ? 'failed' : 'uncertain'
@@ -143,8 +195,8 @@ export const sendFreeeQuotation = onCall(options, async request => {
   }
   // If this commit fails, status stays sending. Never perform a second POST.
   const batch = db.batch()
-  batch.update(ref, { status: 'sent', result, error: '', updatedAt: FieldValue.serverTimestamp() })
-  batch.create(ref.collection('events').doc(), eventData(userId, 'sent', saved.revision, { result }))
+  batch.update(ref, { status: 'sent', result, error: '', lastSentRevision: saved.revision, updatedAt: FieldValue.serverTimestamp() })
+  batch.create(ref.collection('events').doc(), eventData(userId, 'sent', saved.revision, { result, operation: saved.operation ?? 'create' }))
   await batch.commit()
   return { status: 'sent', result }
 })
@@ -155,6 +207,7 @@ export const reconcileFreeeQuotation = onCall(options, async request => {
   if (!Number.isSafeInteger(data.quotationId) || Number(data.quotationId) <= 0) throw new HttpsError('invalid-argument', '作成済みfreee見積書IDを入力してください。')
   const ref = exportRef(rfqId), current = await ref.get(), saved = current.data() as ExportRecord | undefined
   if (!saved || !['sending', 'uncertain'].includes(saved.status)) throw new HttpsError('failed-precondition', '結果不明の見積のみ照合できます。')
+  if (saved.operation === 'update' && data.quotationId !== saved.updateTarget?.id) throw new HttpsError('failed-precondition', '上書き更新は元のfreee見積書IDで照合してください。')
   if (saved.startedAt && Date.now() - saved.startedAt.toMillis() < 120_000) throw new HttpsError('failed-precondition', '送信処理の完了を待っています。2分後に照合してください。')
   const token = await connection(true)
   if (token.companyId !== saved.companyId) throw new HttpsError('failed-precondition', '元の事業所に再接続してください。')
@@ -169,8 +222,8 @@ export const reconcileFreeeQuotation = onCall(options, async request => {
   await getFirestore().runTransaction(async transaction => {
     const latest = (await transaction.get(ref)).data() as ExportRecord
     if (latest.digest !== saved.digest || !['sending', 'uncertain'].includes(latest.status)) throw new HttpsError('aborted', '状態が変更されました。再読込してください。')
-    transaction.update(ref, { status: 'sent', result, error: '', updatedAt: FieldValue.serverTimestamp() })
-    transaction.create(ref.collection('events').doc(), eventData(request.auth!.uid, 'reconciled', saved.revision, { result }))
+    transaction.update(ref, { status: 'sent', result, error: '', lastSentRevision: saved.revision, updatedAt: FieldValue.serverTimestamp() })
+    transaction.create(ref.collection('events').doc(), eventData(request.auth!.uid, 'reconciled', saved.revision, { result, operation: saved.operation ?? 'create' }))
   })
   return { status: 'sent', result }
 })

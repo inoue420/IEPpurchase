@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
@@ -48,7 +49,7 @@ beforeEach(async () => {
   vi.spyOn(SecretManagerServiceClient.prototype, 'accessSecretVersion').mockImplementation(((request: { name?: string }) => Promise.resolve([{ name: request.name, payload: { data: Buffer.from(JSON.stringify({ companyId: '456', accessToken: 'FAKE', authorizedAt: new Date().toISOString(), expiresIn: 21600 })) } }])) as never)
   await env.clearFirestore()
   await db.doc(FREEE_TOKEN_METADATA_PATH).set({ currentVersion: tokenVersion, updatedAt: Timestamp.now() })
-  await db.doc('rfqs/rfq').set({ status: 'quoting', customerId: 'customer', customerName: 'Customer' })
+  await db.doc('rfqs/rfq').set({ rfqNumber: 'RFQ-2026-000001', status: 'quoting', customerId: 'customer', customerName: 'Customer' })
   await db.doc('rfqs/rfq/items/item').set({ manufacturerName: 'ACME' })
   await db.doc('salesQuotes/rfq').set({ rfqId: 'rfq', status: 'confirmed', confirmedAt: Timestamp.now() })
   await db.doc('salesQuotes/rfq/items/item').set({ ...source, confirmedAt: Timestamp.now() })
@@ -139,6 +140,27 @@ describe('freee numeric token version metadata integration', () => {
 })
 
 describe('freee quotation transaction and authorization integration', () => {
+  it('builds the two-line memo from the stored RFQ and keeps identical saved versions distinguishable', async () => {
+    const first = await run(saveSalesQuotePricing, { settings, expectedRevision: 0, rfqNumber: 'FORGED', memo: 'FORGED' })
+    expect(first.payload.memo).toBe('案件リンク：https://ieppurchase.web.app/rfqs/rfq?freeeExportRevision=1\n案件番号：RFQ-2026-000001')
+    const next = await save(1)
+    expect(next.payload.lines).toEqual(first.payload.lines)
+    expect(next.payload.memo).not.toBe(first.payload.memo)
+    expect((await ref().collection('revisions').doc('1').get()).get('payload.memo')).toBe(first.payload.memo)
+    await db.doc('rfqs/rfq').update({ rfqNumber: '' })
+    await expect(save(2)).rejects.toMatchObject({ code: 'failed-precondition' })
+    expect((await ref().get()).get('revision')).toBe(2)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it('still reconciles a legacy marker-only memo without rewriting it', async () => {
+    const saved = await save()
+    saved.payload.memo = saved.marker
+    await ref().update({ payload: saved.payload, status: 'uncertain', startedAt: Timestamp.fromMillis(Date.now() - 121_000) })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(successfulResponse(saved)))))
+    expect((await run(reconcileFreeeQuotation, { quotationId: 99 })).status).toBe('sent')
+    expect((await ref().get()).get('payload.memo')).toBe(saved.marker)
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
   it('requires authentication and explicit send confirmation before credentials or HTTP', async () => {
     for (const call of [saveSalesQuotePricing, sendFreeeQuotation, reconcileFreeeQuotation, startSalesQuoteRevision]) await expect(call.run({ data: {} })).rejects.toMatchObject({ code: 'unauthenticated' })
     await expect(run(sendFreeeQuotation, { revision: 1, digest: 'x' })).rejects.toMatchObject({ code: 'invalid-argument' })
@@ -360,11 +382,36 @@ describe('quotation revisions and updates', () => {
     await send(saved)
     return saved
   }
-  async function confirmAndSave(expectedRevision = 1) {
+  async function confirmAndSave(expectedRevision = 1, outputDescription = 'Revised bolt') {
     await db.doc('salesQuotes/rfq').update({ status: 'confirmed', confirmedAt: Timestamp.now() })
-    await db.doc('salesQuotes/rfq/items/item').update({ outputDescription: 'Revised bolt', confirmedAt: Timestamp.now() })
+    await db.doc('salesQuotes/rfq/items/item').update({ outputDescription, confirmedAt: Timestamp.now() })
     return save(expectedRevision)
   }
+  it('revises a sent legacy memo to the new two-line memo using the same freee ID and preserving the old snapshot', async () => {
+    const original = await save()
+    original.payload.memo = original.marker
+    original.digest = createHash('sha256').update(JSON.stringify({ payload: original.payload, preview: original.preview })).digest('hex')
+    await ref().update({ payload: original.payload, digest: original.digest })
+    await ref().collection('revisions').doc('1').update({ payload: original.payload, digest: original.digest })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(successfulResponse(original)))))
+    await send(original)
+    const snapshot = (await ref().collection('revisions').doc('1').get()).data()
+    await revise(original)
+    const next = await confirmAndSave(1, source.outputDescription)
+    expect(next.payload.memo).toBe('案件リンク：https://ieppurchase.web.app/rfqs/rfq?freeeExportRevision=2\n案件番号：RFQ-2026-000001')
+    const http = vi.fn(async (url: string, init: RequestInit) => {
+      if (!init.method) return new Response(JSON.stringify(successfulResponse(original)))
+      expect(url).toBe('https://api.freee.co.jp/iv/quotations/99')
+      expect(init.method).toBe('PUT')
+      expect(JSON.parse(String(init.body)).memo).toBe(next.payload.memo)
+      return new Response(JSON.stringify(successfulResponse(next)))
+    })
+    vi.stubGlobal('fetch', http)
+    expect((await send(next)).status).toBe('sent')
+    expect(http).toHaveBeenCalledTimes(2)
+    expect((await ref().get()).get('result.id')).toBe(99)
+    expect((await ref().collection('revisions').doc('1').get()).data()).toEqual(snapshot)
+  })
   it('reopens a saved draft, blocks its old send preview and preserves its immutable revision', async () => {
     const original = await save(), snapshot = (await ref().collection('revisions').doc('1').get()).data()
     await revise(original)
@@ -388,7 +435,7 @@ describe('quotation revisions and updates', () => {
       if (!init.method) return new Response(JSON.stringify(successfulResponse(original)))
       expect(url).toBe('https://api.freee.co.jp/iv/quotations/99')
       expect(init.method).toBe('PUT')
-      expect(JSON.parse(String(init.body))).toMatchObject({ memo: next.marker, lines: next.payload.lines })
+      expect(JSON.parse(String(init.body))).toMatchObject({ memo: next.payload.memo, lines: next.payload.lines })
       return new Response(JSON.stringify(successfulResponse(next)))
     })
     vi.stubGlobal('fetch', http)
@@ -421,7 +468,7 @@ describe('quotation revisions and updates', () => {
     expect(fetch).toHaveBeenCalledTimes(1)
     expect((await ref().get()).get('result.id')).toBe(100)
     expect((await ref().get()).get('previousResult.id')).toBe(99)
-    expect((await ref().collection('revisions').doc('1').get()).get('payload.memo')).toBe(original.marker)
+    expect((await ref().collection('revisions').doc('1').get()).get('payload.memo')).toBe(original.payload.memo)
   })
   it('refuses concurrent or stale revision requests and rejects editing during unknown transfers', async () => {
     const original = await sentQuote()
@@ -463,10 +510,13 @@ describe('quotation revisions and updates', () => {
     }))
     expect((await send(next)).status).toBe('sent')
   })
-  it('keeps PUT timeouts locked and reconciles only the original ID and new revision marker', async () => {
+  it('keeps PUT timeouts locked and rejects the previous memo even with identical lines and amounts', async () => {
     const original = await sentQuote()
     await revise(original)
-    const next = await confirmAndSave()
+    const next = await confirmAndSave(1, source.outputDescription)
+    expect(next.payload.lines).toEqual(original.payload.lines)
+    expect(next.preview.total).toBe(original.preview.total)
+    expect(next.payload.memo).not.toBe(original.payload.memo)
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       if (!init.method) return new Response(JSON.stringify(successfulResponse(original)))
       throw new Error('timeout after PUT')

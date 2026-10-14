@@ -1,3 +1,24 @@
+## devで販売見積を再保存してもfreee登録ボタンが無効になる不具合（2026-10-14・完了／ユーザー転記確認OK）
+- ユーザー画像とコードを確認。devもEmulator明示指定がなければ本番Functionsへ接続する。新画面だけが先に起動され、未反映のsaveSalesQuotePricingが旧識別メモを返すため、前回追加した旧メモの未保存判定が常にtrueとなり、版だけが増えて転記確認に進めなくなっていた。
+- 社内メモの形式を見積内容のdirty判定から外した。旧形式でも内容・取引先・明細が保存済みなら転記確認を許可し、確認画面に実際の旧メモを表示する。メモ更新だけの再保存は任意とし、保存応答が旧形式なら以後の同一内容再保存を無効にして未反映の案内を表示する。実際の入力変更・編集中・未保存・競合・送信中／結果不明の制限は維持する。
+- 主な変更: src/features/salesQuotes/FreeeQuotationSection.tsx、docs/FREEE_QUOTATION_MEMO.md。前回の社内メモ生成／照合Functions変更と過去の保存履歴は保持。実装・検証時に本番データ変更・実freee送信は実施していない。2026-10-14に社内メモのFunctions反映と併せてHostingへ反映済み（次項）。
+- 自動確認: typecheck・lint・フロントproduction build成功。販売見積関連単体46件成功。実コンポーネントをローカルブラウザと架空データ・通信モックで確認し、旧サーバーで1回保存後に登録確認有効／同一内容再保存無効、備考変更時は保存まで転記拒否、再保存後の確認・モック新規転記成功、新サーバーで新メモ保存・同一IDモック更新成功を確認。初回sandboxの一時ファイルrename／ブラウザのローカル接続制約は許可済み再実行で解消。既存lint警告1件とbuild警告は継続。
+- 架空データの確認画像: tmp/freee-memo-preview/legacy-confirmation.png・new-confirmation.png。Functions／Rulesはこの追加修正では変更しておらず、前回のFunctions build・Firestore結合33件成功を維持。管理シート更新不要（既存機能の不具合修正として記録）。コミット未実施。
+- ユーザー確認（2026-10-14）: 「freeeには送れました」と転記成功の確認を受領（原文の「遅れました」は文脈と添付画像から転記成功と解釈）。登録ボタンの不具合は完了として記録。添付freee画面では旧識別メモv7のため、案件リンク・案件番号の本番適用は次項で継続する。
+
+## freee見積の社内メモへ案件リンク・案件番号を記載（2026-10-14・完了／ユーザー確認OK・本番反映済み）
+- ユーザー要望により、今後の販売見積保存でfreeeの社内メモを「案件リンク：https://ieppurchase.web.app/rfqs/{rfqId}?freeeExportRevision={保存版}」「案件番号：{rfqNumber}」の2行にする。案件番号はサーバー側でRFQから取得し、顧客向け備考とは分ける。
+- URLの保存版パラメータで転記を識別し、同じ明細・金額の改訂でも通信断後に旧版を誤照合しない。照合は保存したpayload.memo全体で行い、従来のIEPpurchase識別メモも引き続き照合できる。上書き前の旧メモ照合・手修正保護は維持。
+- 保存済み内容・転記確認・保存履歴に実際の社内メモを表示。旧形式の下書き／登録拒否は変更入力なしでも任意で再保存でき、更新済みFunctionsなら新しい保存版で新形式にする。未反映Functionsが旧形式を返しても転記確認を妨げない（上記追加修正）。過去保存版・転記済み・送信中・結果不明のデータは自動変更しない。
+- 自動確認: typecheck・lint・フロントproduction build・Functions build成功。販売見積関連単体46件、Firestore Emulator結合33件成功。新メモの生成・案件番号のクライアント偽造無視・旧版保持・旧形式照合・同一内容改訂の旧メモ照合拒否・GET/PUT保護を確認。初回のsandbox一時ファイルrename／Emulatorローカル接続制約は許可済み再実行で解消。既存lint警告1件、依存注釈・bundleサイズ警告は継続。
+- 公式freee請求書OpenAPIでmemoが社内メモの文字列フィールドであること、公式ヘルプで帳票へ出力されないことを確認。実装時のAIによるfreeeタブ読み取り接続はタイムアウトし、AIによる実freeeへの登録・更新と本番業務データ変更は実行していない。リンク操作の実機確認は下記ユーザー結果として記録。
+- ユーザーが旧識別メモv7のfreee画面を提示し改善を依頼。旧形式で送信済みの見積から新メモへの改訂を同一IDにGET＋PUTし、旧保存版を保持する追加結合テストが成功（結合34件）。今後の保存で社内メモへ2行を設定するため、saveSalesQuotePricing・reconcileFreeeQuotationとHostingを2026-10-14に反映済み。初回sandboxのHosting設定取得エラーは許可済み再実行で解消。Rules・認証・Secret・その他Functionsは変更していない。
+- 本番読み取り確認（2026-10-14 16:46 JST）: saveSalesQuotePricingはsavesalesquotepricing-00009-rep、reconcileFreeeQuotationはreconcilefreeequotation-00005-suvでACTIVE・新revisionへ100%配信・固定Secret bindingなし・未認証Callable401。公開ページHTTP200、配信中/assets/index-BkpeCPbX.jsと検証済みローカルビルドのSHA-256一致、公開Firestore RulesとローカルRules一致を確認。公開先: https://ieppurchase.web.app 。値を含まない記録: tmp/freee-memo-preview/before-functions.json・verified-functions.json・verified-hosting-rules.json。
+- 主な変更: functions/src/salesQuoteModel.ts・freeeQuotation.ts（生成済みlibを含む）、src/features/salesQuotes/FreeeQuotationSection.tsx、関連単体／結合テスト。仕様・確認手順: docs/FREEE_QUOTATION_MEMO.md。管理シート更新不要（既存機能の改善として本記録へ追記）。コミット未実施。
+- ユーザー確認（2026-10-14）: 「転記されることまで確認しました」と確認OKを受領。freee上ではURLをクリックできず、URLをブラウザへコピーすると対象RFQへ移動できることを確認済み。ユーザーから「リンク埋め込みができないか最後にチェックし、無理ならclose」の指示を受領。
+- 最終仕様確認（2026-10-14）: freee請求書の公式OpenAPIのQuotationRequest.memoはtype:string・1〜2000文字・社内メモとして定義され、リンク属性／HTML／Markdown形式の指定がない。公式社内メモヘルプもテキストエリアへの記入・保存を説明し、リンク埋め込み手順はない。対応不可を明言した公式記載まではないが、現行の公式仕様でクリック可能な埋め込みを実装する方法を確認できなかったため、ユーザーが承認した代替運用（URL・案件番号の文字列転記、URLコピーによる案件移動）を完成形として本件をクローズした。資料: https://github.com/freee/freee-api-schema/blob/master/iv/open-api-3/api-schema.yml#L8947 、https://support.freee.co.jp/hc/ja/articles/43630340840089 。
+- 最終確認では資料のみ更新し、コード・本番帳票・配信内容は変更していない。自動確認の再実行は不要（前回のtypecheck・lint・build・単体46件・結合34件成功を維持）。管理シート更新不要。本件は完了。次の機能はユーザーの指示に従う。
+
 ## 販売見積の改訂・freee上書き更新（2026-10-14・完了／ユーザー確認OK・本番反映済み）
 - ユーザーが1案を採用。同じ案件番号で明細・価格を引き継いで改訂し、新しい保存版を作る。旧保存版・転記結果・IDは保持する。保存済みの下書き／登録拒否も明細を編集可能にした。
 - 前回見積の顧客提示有無を選択必須とする。未提示なら元のfreee見積書IDへPUTで上書き（POSTなし）、提示済みなら旧見積を残してPOSTで新規作成。保存・最終確認でも方式と対象IDを表示する。手動採番の新規改訂は新しい番号を入力する。

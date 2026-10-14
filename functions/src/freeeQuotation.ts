@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager'
 import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
-import { hasUnsupportedFreeeDescription, buildQuotePreview, parseQuoteSettings, record, toFreeePayload, type ConfirmedLine, type QuotePreview, type FreeeQuotePayload } from './salesQuoteModel'
+import { hasUnsupportedFreeeDescription, buildQuotePreview, freeeQuotationMemo, parseQuoteSettings, record, toFreeePayload, type ConfirmedLine, type QuotePreview, type FreeeQuotePayload } from './salesQuoteModel'
 import { createFreeeQuotation, updateFreeeQuotation, FreeeRequestError, freeeResult, type FreeeResult, type FreeeUpdateTarget } from './freeeQuotationTransport'
 import { readOAuthTokenPayload } from './oauthTokenStore'
 import { freeeTokenMetadata } from './freeeTokenMetadata'
@@ -140,7 +140,9 @@ export const saveSalesQuotePricing = onCall(options, async request => {
     try { preview = buildQuotePreview(settings, source) } catch (error) { throw new HttpsError('failed-precondition', (error as Error).message) }
     const revision = (previous?.revision ?? 0) + 1
     const marker = `IEPpurchase:${rfqId}:v${revision}`
-    const payload = toFreeePayload(preview, companyId, marker)
+    let memo: string
+    try { memo = freeeQuotationMemo(rfqId, rfq.get('rfqNumber'), revision) } catch (error) { throw new HttpsError('failed-precondition', (error as Error).message) }
+    const payload = toFreeePayload(preview, companyId, memo)
     const saved: ExportRecord = { rfqId, revision, status: 'draft', companyId, ...(partnerName ? { partnerName } : {}),
       customerId: rfq.get('customerId'), customerName: rfq.get('customerName'),
       preview, marker, payload, digest: hash({ payload, preview }), attempt: previous?.attempt ?? 0, result: null, error: '',
@@ -216,7 +218,7 @@ export const reconcileFreeeQuotation = onCall(options, async request => {
     const response = await fetch(`https://api.freee.co.jp/iv/quotations/${data.quotationId}?company_id=${saved.companyId}`, { headers: { authorization: `Bearer ${token.accessToken}` }, signal: AbortSignal.timeout(25_000), redirect: 'error' })
     if (!response.ok) throw new Error('lookup failed')
     const body: unknown = await response.json(), q = record(record(body).quotation)
-    if (q.id !== data.quotationId || q.memo !== saved.marker || q.partner_id !== saved.payload.partner_id) throw new Error('not the same export')
+    if (q.id !== data.quotationId || q.memo !== saved.payload.memo || q.partner_id !== saved.payload.partner_id) throw new Error('not the same export')
     result = freeeResult(body, saved.payload, saved.preview.total, saved.preview.tax)
   } catch { throw new HttpsError('failed-precondition', 'この送信に対応するfreee見積書を確認できません。事業所・見積書ID・社内メモを確認してください。再作成は停止したままです。') }
   await getFirestore().runTransaction(async transaction => {

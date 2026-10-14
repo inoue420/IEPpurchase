@@ -172,7 +172,14 @@ exports.saveSalesQuotePricing = (0, https_1.onCall)(options, async (request) => 
         }
         const revision = (previous?.revision ?? 0) + 1;
         const marker = `IEPpurchase:${rfqId}:v${revision}`;
-        const payload = (0, salesQuoteModel_1.toFreeePayload)(preview, companyId, marker);
+        let memo;
+        try {
+            memo = (0, salesQuoteModel_1.freeeQuotationMemo)(rfqId, rfq.get('rfqNumber'), revision);
+        }
+        catch (error) {
+            throw new https_1.HttpsError('failed-precondition', error.message);
+        }
+        const payload = (0, salesQuoteModel_1.toFreeePayload)(preview, companyId, memo);
         const saved = { rfqId, revision, status: 'draft', companyId, ...(partnerName ? { partnerName } : {}),
             customerId: rfq.get('customerId'), customerName: rfq.get('customerName'),
             preview, marker, payload, digest: hash({ payload, preview }), attempt: previous?.attempt ?? 0, result: null, error: '',
@@ -265,7 +272,7 @@ exports.reconcileFreeeQuotation = (0, https_1.onCall)(options, async (request) =
         if (!response.ok)
             throw new Error('lookup failed');
         const body = await response.json(), q = (0, salesQuoteModel_1.record)((0, salesQuoteModel_1.record)(body).quotation);
-        if (q.id !== data.quotationId || q.memo !== saved.marker || q.partner_id !== saved.payload.partner_id)
+        if (q.id !== data.quotationId || q.memo !== saved.payload.memo || q.partner_id !== saved.payload.partner_id)
             throw new Error('not the same export');
         result = (0, freeeQuotationTransport_1.freeeResult)(body, saved.payload, saved.preview.total, saved.preview.tax);
     }

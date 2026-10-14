@@ -12,6 +12,7 @@ import { FreeePartnerPicker, type SelectedFreeePartner } from './FreeePartnerPic
 interface SavedQuote {
   partnerName?: string
   revision: number; digest: string; companyId: number; customerName: string; marker: string
+  payload?: { memo: string }
   status: 'draft' | 'sending' | 'failed' | 'uncertain' | 'sent'; preview: QuotePreview; error: string
   result: { id: number; number: string; reportUrl: string; total: number | null; tax: number | null; verification: 'matched' | 'needs_review' } | null
   editing?: boolean; operation?: 'create' | 'update'; updateTarget?: { id: number; number: string } | null
@@ -22,6 +23,9 @@ const yen = (value: number) => `${value.toLocaleString('ja-JP')} 円`
 const fractionLabels = { omit: '切り捨て', round: '四捨五入', round_up: '切り上げ' }
 const statusLabels = { draft: '下書き', sending: '転記中・結果確認待ち', failed: '転記拒否（再試行可能）', uncertain: '結果不明（再転記停止）', sent: '転記済み' }
 const actionLabels: Record<string, string> = { saved: '販売見積保存', revision_started: '改訂の編集開始', sending: '転記開始', failed: '転記拒否', uncertain: '結果不明', sent: '転記成功', reconciled: '転記結果を照合' }
+function usesLegacyMemo(saved: SavedQuote): boolean {
+  return (saved.payload?.memo ?? saved.marker) === saved.marker
+}
 function settingsForEditing(saved: SavedQuote): QuoteSettings {
   const settings = ['draft', 'failed'].includes(saved.status) ? recalculateSalesQuoteSettings(saved.preview.settings) : saved.preview.settings
   return saved.editing && saved.operation === 'create' && saved.previousResult ? { ...settings, quotationNumber: '' } : settings
@@ -35,7 +39,7 @@ function defaults(items: SalesQuoteTranslationItem[], rfqItems: RfqItem[]): Quot
   return { partnerId: '', quotationDate: today, expirationDate: '', subject: '', quotationNumber: '', partnerTitle: '御中', taxEntryMethod: 'out', taxFraction: 'omit', lineAmountFraction: 'omit', note: '', translationsReviewed: false,
     prices: items.map(item => { const purchase = purchaseAmount(rfqItems.find(rfqItem => rfqItem.id === item.id)), margin = '1.2'; return { rfqItemId: item.id, purchaseAmount: purchase, shippingFee: '', margin, unitPrice: calculateSalesUnitPrice(purchase, '', margin), taxRate: 10, reducedTaxRate: false } }) }
 }
-function Preview({ preview }: { preview: QuotePreview }) {
+function Preview({ preview, memo }: { preview: QuotePreview; memo?: string }) {
   const s = preview.settings
   return <Stack spacing={1}>
     <Typography>件名：{s.subject} ／ 見積日：{s.quotationDate} ／ 有効期限：{s.expirationDate || '指定なし'}</Typography>
@@ -47,6 +51,7 @@ function Preview({ preview }: { preview: QuotePreview }) {
     </TableBody></Table></TableContainer>
     <Typography fontWeight="bold">税抜小計：{yen(preview.subtotal)} ／ 消費税：{yen(preview.tax)} ／ 合計：{yen(preview.total)}</Typography>
     {s.note && <Typography sx={{ whiteSpace: 'pre-wrap' }}>備考：{s.note}</Typography>}
+    {memo && <Typography sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>freee社内メモ：<br />{memo}</Typography>}
   </Stack>
 }
 type DisplayItem = SalesQuoteTranslationItem & { manufacturerName: string }
@@ -56,6 +61,7 @@ function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: Displ
   const [baseRevision, setBaseRevision] = useState(saved?.revision ?? 0)
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [confirming, setConfirming] = useState<SavedQuote | null>(null)
   const [quotationId, setQuotationId] = useState('')
+  const [memoRefreshUnavailable, setMemoRefreshUnavailable] = useState(false)
   const [partner, setPartner] = useState<SelectedFreeePartner | null>(() => saved?.partnerName ? { id: Number(saved.preview.settings.partnerId), name: saved.partnerName, companyId: saved.companyId } : null)
   // Firestore arrives after the editor has mounted. Start an existing draft from
   // that saved version instead of the empty defaults, so it can be revised.
@@ -78,6 +84,7 @@ function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: Displ
   const updating = saved?.operation === 'update'
   const stale = (saved?.revision ?? 0) !== baseRevision
   const needsDescriptionResave = !!saved?.preview.lines.some(line => hasUnsupportedFreeeDescription(line.description))
+  const hasLegacyMemo = !!saved && usesLegacyMemo(saved)
   let localPreview: QuotePreview | null = null, validation = ''
   try { localPreview = buildQuotePreview(parseQuoteSettings(settings), items) } catch (cause) { validation = cause instanceof Error ? cause.message : '入力を確認してください。' }
   const sourceChanged = !!saved && !!localPreview && (localPreview.lines.length !== saved.preview.lines.length || localPreview.lines.some(line => {
@@ -85,6 +92,9 @@ function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: Displ
     return !previous || ['lineNo', 'partNumber', 'quantity', 'unit', 'manufacturerName', 'originalDescription', 'translatedDescription', 'outputDescription'].some(key => line[key as keyof typeof line] !== previous[key as keyof typeof previous])
   }))
   const dirty = !!saved?.editing || needsDescriptionResave || sourceChanged || !saved || !salesQuoteSettingsEqual(settings, saved.preview.settings) || partner?.name !== saved.partnerName || (!!partner && partner.companyId !== saved.companyId)
+  // Memo refresh is optional. An older server returning its saved legacy memo
+  // must not turn an otherwise saved quote into an endless save/send blocker.
+  const canRefreshMemo = hasLegacyMemo && !memoRefreshUnavailable
   function update<K extends keyof QuoteSettings>(key: K, value: QuoteSettings[K]) { setSettings(previous => ({ ...previous, [key]: value })) }
   async function save() {
     if (!partner) { setError('freee取引先を名前で選択してください。'); return }
@@ -93,6 +103,7 @@ function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: Displ
       const call = httpsCallable<unknown, SavedQuote>(firebaseFunctions, 'saveSalesQuotePricing')
       const { data } = await call({ rfqId, settings, expectedRevision: baseRevision, partnerCompanyId: partner.companyId })
       setSettings(data.preview.settings); setBaseRevision(data.revision)
+      setMemoRefreshUnavailable(usesLegacyMemo(data))
       setPartner({ id: Number(data.preview.settings.partnerId), name: data.partnerName ?? partner.name, companyId: data.companyId })
     } catch (cause) { setError(cause instanceof Error ? cause.message : '保存できませんでした。') } finally { setBusy(false) }
   }
@@ -146,17 +157,18 @@ function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: Displ
       </Stack></Box>
       {validation && <Alert severity="info" sx={{ whiteSpace: 'pre-wrap' }}>{validation}</Alert>}
       {localPreview && <><Typography component="h3" variant="subtitle1">入力中のプレビュー</Typography><Preview preview={localPreview} /></>}
-      <Button variant="outlined" disabled={busy || stale || !localPreview || !dirty || !partner} onClick={() => void save()}>{busy ? '処理中…' : '販売見積を保存'}</Button>
+      <Button variant="outlined" disabled={busy || stale || !localPreview || (!dirty && !canRefreshMemo) || !partner} onClick={() => void save()}>{busy ? '処理中…' : '販売見積を保存'}</Button>
     </>}
     {saved && <>
       <Typography>freee取引先：{saved.partnerName ?? '未確認：名前で選択して保存し直してください'}</Typography>
-      <Typography component="h3" variant="subtitle1">保存済みの送信内容（版 {saved.revision}）</Typography><Preview preview={saved.preview} />
+      <Typography component="h3" variant="subtitle1">保存済みの送信内容（版 {saved.revision}）</Typography><Preview preview={saved.preview} memo={saved.payload?.memo ?? saved.marker} />
       {!locked && !busy && !stale && (!partner || dirty) && <Alert severity="info">{needsDescriptionResave ? '摘要の改行をスペースに変換します。入力中のプレビューを確認し、「販売見積を保存」で新しい版を作成してください。' : !partner ? 'freee取引先を選択して、販売見積を保存してください。' : '未保存の変更があります。「販売見積を保存」してから登録内容を確認してください。'}</Alert>}
+      {!locked && hasLegacyMemo && <Alert severity={memoRefreshUnavailable ? 'warning' : 'info'}>{memoRefreshUnavailable ? '見積は保存済みです。案件リンク・案件番号への変更は接続先にまだ反映されていません。転記確認画面には、今回送る旧形式の社内メモを表示します。' : '社内メモは旧形式です。「販売見積を保存」で案件リンク・案件番号への更新を試せます。見積内容が保存済みなら、表示中の社内メモで転記確認へ進めます。'}</Alert>}
       {!locked && <Button variant="contained" disabled={busy || dirty || stale || !partner} onClick={() => setConfirming(saved)}>{updating ? 'freeeへの上書き内容を確認' : 'freeeへの登録内容を確認'}</Button>}
       {saved.result && <Alert severity={saved.result.verification === 'matched' ? 'success' : 'warning'}>freee見積書ID：{saved.result.id} ／ 番号：{saved.result.number || '—'} ／ freee合計：{saved.result.total === null ? '未取得' : yen(saved.result.total)}<br />{saved.result.verification === 'matched' ? '明細・金額は送信内容と一致しました。' : 'freeeの応答と送信内容に差異または未取得項目があります。帳票を確認してください。再作成は行いません。'}{saved.result.reportUrl && <><br /><Link href={saved.result.reportUrl} target="_blank" rel="noopener noreferrer">freee見積書を開く</Link></>}</Alert>}
-      {['sending', 'uncertain'].includes(saved.status) && <Stack spacing={1}><Alert severity="warning">2分以上経過しても結果が確定しない場合、freeeで見積書を確認してください。社内メモ「{saved.marker}」が一致する見積書のIDで照合します。見つからない場合は管理者による調査が必要です。</Alert><TextField label="作成済みfreee見積書ID" value={quotationId} onChange={e => setQuotationId(e.target.value)} /><Button disabled={busy || !/^[1-9]\d*$/.test(quotationId)} onClick={() => void reconcile()}>freeeの作成結果を照合</Button></Stack>}
+      {['sending', 'uncertain'].includes(saved.status) && <Stack spacing={1}><Alert severity="warning" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>2分以上経過しても結果が確定しない場合、freeeで見積書を確認してください。上の送信内容と社内メモ全体が一致する見積書のIDで照合します。見つからない場合は管理者による調査が必要です。</Alert><TextField label="作成済みfreee見積書ID" value={quotationId} onChange={e => setQuotationId(e.target.value)} /><Button disabled={busy || !/^[1-9]\d*$/.test(quotationId)} onClick={() => void reconcile()}>freeeの作成結果を照合</Button></Stack>}
     </>}
-    <Dialog open={!!confirming} fullWidth maxWidth="lg" onClose={busy ? undefined : () => setConfirming(null)}><DialogTitle>{updating ? '同じfreee見積書を上書き更新します' : 'freee見積書を新規作成します'}</DialogTitle><DialogContent>{confirming && <Stack spacing={2}><Alert severity="warning">接続事業所ID {confirming.companyId} のfreeeに{updating ? `上書き更新します（見積書ID：${confirming.updateTarget?.id}）。見積書は増えません。` : '新規登録します。'}顧客「{confirming.customerName}」とfreee取引先「{confirming.partnerName}」（ID {confirming.preview.settings.partnerId}） の対応を確認してください。</Alert><Preview preview={confirming.preview} /><Typography>保存版 {confirming.revision} を転記します。顧客へのメール送付は行いません。</Typography></Stack>}</DialogContent><DialogActions><Button disabled={busy} onClick={() => setConfirming(null)}>キャンセル</Button><Button variant="contained" disabled={busy || confirming?.digest !== saved?.digest || dirty || locked} onClick={() => void send()}>{busy ? '転記中…' : updating ? '確認した内容でfreeeを上書き更新' : '確認した内容でfreeeに新規登録'}</Button></DialogActions></Dialog>
+    <Dialog open={!!confirming} fullWidth maxWidth="lg" onClose={busy ? undefined : () => setConfirming(null)}><DialogTitle>{updating ? '同じfreee見積書を上書き更新します' : 'freee見積書を新規作成します'}</DialogTitle><DialogContent>{confirming && <Stack spacing={2}><Alert severity="warning">接続事業所ID {confirming.companyId} のfreeeに{updating ? `上書き更新します（見積書ID：${confirming.updateTarget?.id}）。見積書は増えません。` : '新規登録します。'}顧客「{confirming.customerName}」とfreee取引先「{confirming.partnerName}」（ID {confirming.preview.settings.partnerId}） の対応を確認してください。</Alert><Preview preview={confirming.preview} memo={confirming.payload?.memo ?? confirming.marker} /><Typography>保存版 {confirming.revision} を転記します。顧客へのメール送付は行いません。</Typography></Stack>}</DialogContent><DialogActions><Button disabled={busy} onClick={() => setConfirming(null)}>キャンセル</Button><Button variant="contained" disabled={busy || confirming?.digest !== saved?.digest || dirty || locked} onClick={() => void send()}>{busy ? '転記中…' : updating ? '確認した内容でfreeeを上書き更新' : '確認した内容でfreeeに新規登録'}</Button></DialogActions></Dialog>
   </Stack>
 }
 
@@ -178,5 +190,5 @@ export function FreeeQuotationSection({ rfqId, items, rfqItems }: { rfqId: strin
     {!loaded ? <Typography>保存状態を読み込み中…</Typography> : !error && <Editor rfqId={rfqId} items={items.map(item => ({ ...item, manufacturerName: rfqItems.find(rfqItem => rfqItem.id === item.id)?.manufacturerName ?? '' }))} rfqItems={rfqItems} saved={saved} />}
     {versions.length > 0 && <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap"><Typography>保存履歴（最新20版）：</Typography>{versions.map(v => <Button key={v.id} size="small" onClick={() => setVersion(v)}>版 {v.revision}</Button>)}</Stack>}
     {events.length > 0 && <><Typography variant="subtitle1">操作・結果履歴（最新20件）</Typography>{events.map(event => <Typography key={event.id} variant="body2">{event.createdAt instanceof Timestamp ? event.createdAt.toDate().toLocaleString('ja-JP') : '記録中'} ／ 版 {event.revision} ／ {actionLabels[event.action] ?? event.action}{event.operation ? `（${event.operation === 'update' ? '上書き更新' : '新規作成'}）` : ''} ／ 操作者：{event.userId}{event.result && ` ／ freee見積書ID：${event.result.id} ／ 番号：${event.result.number || '—'}`}{event.previousResult && ` ／ 改訂元freee見積書ID：${event.previousResult.id}`}{event.message ? ` ／ ${event.message}` : ''}</Typography>)}</>}
-  </Stack><Dialog open={!!version} fullWidth maxWidth="lg" onClose={() => setVersion(null)}><DialogTitle>保存版 {version?.revision}</DialogTitle><DialogContent>{version && <Preview preview={version.preview} />}</DialogContent><DialogActions><Button onClick={() => setVersion(null)}>閉じる</Button></DialogActions></Dialog></Paper>
+  </Stack><Dialog open={!!version} fullWidth maxWidth="lg" onClose={() => setVersion(null)}><DialogTitle>保存版 {version?.revision}</DialogTitle><DialogContent>{version && <Preview preview={version.preview} memo={version.payload?.memo ?? version.marker} />}</DialogContent><DialogActions><Button onClick={() => setVersion(null)}>閉じる</Button></DialogActions></Dialog></Paper>
 }

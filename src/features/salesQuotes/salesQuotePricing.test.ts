@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildQuotePreview, calculateSalesUnitPrice, parseQuoteSettings, toFreeePayload, type ConfirmedLine } from '../../../functions/src/salesQuoteModel'
+import { buildQuotePreview, calculateSalesUnitPrice, freeeQuotationMemo, parseQuoteSettings, toFreeePayload, type ConfirmedLine } from '../../../functions/src/salesQuoteModel'
 import { createFreeeQuotation, freeeResult } from '../../../functions/src/freeeQuotationTransport'
 import { recalculateSalesQuoteSettings } from './salesQuoteSettingsEqual'
 
@@ -9,6 +9,30 @@ const preview = () => buildQuotePreview(settings(), [line])
 const payload = () => toFreeePayload(preview(), 456, 'IEPpurchase:rfq:v1')
 const response = (change: Record<string, unknown> = {}) => ({ quotation: { id: 1, quotation_number: 'Q-1', company_id: 456, partner_id: 123, total_amount: 220, amount_tax: 20, lines: payload().lines, report_url: 'https://invoice.freee.co.jp/reports/1', ...change } })
 
+describe('freee internal quotation memo', () => {
+  it('uses exactly two lines with the RFQ page URL and case number, keeping customer-facing notes separate', () => {
+    const memo = freeeQuotationMemo('rfq_a-1', 'RFQ-2026-000001', 1)
+    expect(memo).toBe('案件リンク：https://ieppurchase.web.app/rfqs/rfq_a-1?freeeExportRevision=1\n案件番号：RFQ-2026-000001')
+    const url = new URL(memo.split('\n')[0].slice('案件リンク：'.length))
+    expect(url.pathname).toBe('/rfqs/rfq_a-1')
+    const data = toFreeePayload(buildQuotePreview(settings({ note: 'Customer note' }), [line]), 456, memo)
+    expect(data.memo).toBe(memo)
+    expect(data.quotation_note).toBe('Customer note')
+    expect(memo).not.toContain('IEPpurchase:')
+    expect(memo.length).toBeLessThan(2000)
+  })
+  it('distinguishes identical revisions for recovery while keeping the same case URL path and number', () => {
+    const first = freeeQuotationMemo('rfq', 'RFQ-2026-000001', 1), next = freeeQuotationMemo('rfq', 'RFQ-2026-000001', 2)
+    expect(first).not.toBe(next)
+    expect(first.split('\n')[1]).toBe(next.split('\n')[1])
+    expect(new URL(next.split('\n')[0].slice('案件リンク：'.length)).pathname).toBe('/rfqs/rfq')
+  })
+  it('rejects missing case numbers, injected lines, invalid IDs and invalid revision numbers', () => {
+    for (const number of [undefined, '', ' ', 'RFQ-1\nother', 'RFQ-1\u2028other']) expect(() => freeeQuotationMemo('rfq', number, 1)).toThrow()
+    expect(() => freeeQuotationMemo('../other', 'RFQ-1', 1)).toThrow()
+    for (const revision of [0, -1, 1.5, NaN]) expect(() => freeeQuotationMemo('rfq', 'RFQ-1', revision)).toThrow()
+  })
+})
 describe('sales quote calculations and immutable translated lines', () => {
   it.each([
     ['1234', '', '1.2', '1500'],

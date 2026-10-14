@@ -6,6 +6,7 @@ exports.parseQuoteSettings = parseQuoteSettings;
 exports.hasUnsupportedFreeeDescription = hasUnsupportedFreeeDescription;
 exports.freeeDescription = freeeDescription;
 exports.buildQuotePreview = buildQuotePreview;
+exports.freeeQuotationMemo = freeeQuotationMemo;
 exports.toFreeePayload = toFreeePayload;
 function record(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
@@ -149,7 +150,17 @@ function buildQuotePreview(settings, source) {
         throw new Error('見積合計は1兆円以下にしてください。');
     return { settings, lines, subtotal: Number(settings.taxEntryMethod === 'in' ? sum - tax : sum), tax: Number(tax), total: Number(total), warnings };
 }
-function toFreeePayload(preview, companyId, marker) {
+function freeeQuotationMemo(rfqId, rfqNumber, revision) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(rfqId) || !Number.isSafeInteger(revision) || revision <= 0)
+        throw new Error('案件リンクを生成できません。');
+    const number = text(rfqNumber, '案件番号', 255).trim();
+    if (hasUnsupportedFreeeDescription(number))
+        throw new Error('案件番号に改行・制御文字が含まれています。');
+    // Keep the memo unique per saved revision, even when its amounts and lines are identical.
+    const url = `https://ieppurchase.web.app/rfqs/${rfqId}?freeeExportRevision=${revision}`;
+    return `案件リンク：${url}\n案件番号：${number}`;
+}
+function toFreeePayload(preview, companyId, memo) {
     const s = preview.settings;
     return {
         company_id: companyId, partner_id: Number(s.partnerId), quotation_date: s.quotationDate,
@@ -157,7 +168,7 @@ function toFreeePayload(preview, companyId, marker) {
         ...(s.quotationNumber ? { quotation_number: s.quotationNumber } : {}),
         subject: s.subject, partner_title: s.partnerTitle, tax_entry_method: s.taxEntryMethod,
         tax_fraction: s.taxFraction, line_amount_fraction: s.lineAmountFraction,
-        withholding_tax_entry_method: 'out', quotation_note: s.note, memo: marker,
+        withholding_tax_entry_method: 'out', quotation_note: s.note, memo,
         lines: preview.lines.map(line => ({ type: 'item', description: line.description, quantity: line.quantity, unit: line.unit, unit_price: line.unitPrice, tax_rate: line.taxRate, reduced_tax_rate: line.reducedTaxRate, withholding: false })),
     };
 }

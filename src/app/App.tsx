@@ -11,7 +11,7 @@ import { RfqEditorPage } from '../features/rfqs/RfqEditorPage'
 import { RfqsPage } from '../features/rfqs/RfqsPage'
 import { FreeeIntegrationPage } from '../features/freee/FreeeIntegrationPage'
 import { firebaseFunctions } from '../firebase/firebase'
-
+ 
 interface FreeeConnectionStatus { connected: boolean }
 
 export default function App() {

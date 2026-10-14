@@ -4,6 +4,7 @@ import { createRfqItem, updateRfqItem, type EcPurchaseCandidate, type RfqItem, t
 import { RFQ_ITEM_STATUSES, localDateInput, rfqItemSchema, rfqItemStatusLabels, rfqItemStatusAfterRakutenSearch } from './rfqItemSchema'
 import { rfqError } from './rfqError'
 import { RakutenSearchDialog, type RakutenSearchItem } from '../marketplaceOffers/RakutenSearchDialog'
+import { searchRakutenItems } from '../marketplaceOffers/rakutenSearch'
 import { selectPartNumberMatchedRakutenItems } from './rakutenCandidateSelection'
 
 const emptyInput: RfqItemInput = { originalDescription: '', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 1, supplierResponseUnitPrice: null, unit: '個', supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: '', status: 'pending', note: '' }
@@ -25,6 +26,7 @@ export function RfqItemDialog({ rfqId, item, products, onClose, onSaved }: { rfq
   const [ecPurchaseCandidates, setEcPurchaseCandidates] = useState<EcPurchaseCandidateDraft[]>(() => Array.from({ length: 10 }, (_, index) => { const candidate = item?.ecPurchaseCandidates[index]; return candidate ? { ...candidate, price: String(candidate.price) } : { storeProductName: '', url: '', price: '', purchasePlanned: false } }))
   const [rakutenSearchOpen, setRakutenSearchOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [searching, setSearching] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const submitting = useRef(false)
@@ -54,6 +56,24 @@ export function RfqItemDialog({ rfqId, item, products, onClose, onSaved }: { rfq
     setError(null)
     setNotice(`楽天検索の上位10件を確認し、品番一致の${matched.length}件をEC購入候補へ追加しました。`)
   }
+  function clearSearchResults() {
+    if (submitting.current) return
+    setEcPurchaseCandidates(Array.from({ length: 10 }, () => ({ storeProductName: '', url: '', price: '', purchasePlanned: false })))
+    setError(null)
+    setNotice('全候補の商品名・URL・価格と購入予定チェックをクリアしました。変更を確定するには保存してください。')
+  }
+  async function runRakutenSearch() {
+    if (submitting.current || !input.manufacturerName.trim() || !input.partNumber.trim() || !ecPurchaseCandidates.some(candidate => !candidate.storeProductName && !candidate.url && !candidate.price)) return
+    submitting.current = true; setBusy(true); setSearching(true); setError(null); setNotice(null)
+    try {
+      const result = await searchRakutenItems(`${input.manufacturerName.trim()} ${input.partNumber.trim()}`)
+      addRakutenCandidates(result.items)
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : '楽天検索に失敗しました。時間をおいて再検索してください。')
+    } finally {
+      submitting.current = false; setBusy(false); setSearching(false)
+    }
+  }
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (submitting.current) return
@@ -79,7 +99,14 @@ export function RfqItemDialog({ rfqId, item, products, onClose, onSaved }: { rfq
         {textFields.map(({ key, label, max, rows, required }) => <TextField key={key} label={label} required={required} multiline={Boolean(rows)} minRows={rows} value={input[key]} disabled={busy} slotProps={{ htmlInput: { maxLength: max } }} onChange={event => setInput(current => ({ ...current, [key]: event.target.value }))} />)}
         <TextField label="数量" required type="number" slotProps={{ htmlInput: { min: 0, step: 'any' } }} value={quantityText} disabled={busy} onChange={event => setQuantityText(event.target.value)} />
         <TextField label="仕入先回答単価（円）" type="number" slotProps={{ htmlInput: { min: 0, step: 1 } }} value={supplierResponseUnitPriceText} disabled={busy} onChange={event => setSupplierResponseUnitPriceText(event.target.value)} helperText="仕入先から回答された税抜きの単価を入力します。" />
-        <Box><Button disabled={busy || !input.manufacturerName.trim() || !input.partNumber.trim() || !ecPurchaseCandidates.some(candidate => !candidate.storeProductName && !candidate.url && !candidate.price)} onClick={() => setRakutenSearchOpen(true)}>楽天で検索</Button><Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>メーカー名と品番で楽天を検索し、上位10件を確認して品番がストア掲載商品名に一致するものだけを空き枠へ追加します。</Typography></Box>
+        <Box>
+          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+            <Button type="button" variant="outlined" disabled={busy || !ecPurchaseCandidates.some(candidate => candidate.storeProductName || candidate.url || candidate.price || candidate.purchasePlanned)} onClick={clearSearchResults}>検索結果をクリア</Button>
+            <Button type="button" variant="contained" disabled={busy || !input.manufacturerName.trim() || !input.partNumber.trim() || !ecPurchaseCandidates.some(candidate => !candidate.storeProductName && !candidate.url && !candidate.price)} onClick={() => void runRakutenSearch()}>{searching ? '楽天検索中…' : '楽天検索実行'}</Button>
+            <Button type="button" disabled={busy || !input.manufacturerName.trim() || !input.partNumber.trim() || !ecPurchaseCandidates.some(candidate => !candidate.storeProductName && !candidate.url && !candidate.price)} onClick={() => setRakutenSearchOpen(true)}>検索語を指定して検索</Button>
+          </Stack>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>メーカー名と品番で楽天を検索し、上位10件を確認して品番がストア掲載商品名に一致するものだけを空き枠へ追加し、価格の安い順に並べます。全候補を入れ替える場合は、検索結果をクリアしてから実行してください。変更は保存後に反映されます。</Typography>
+        </Box>
         <Box><Typography variant="subtitle2" sx={{ mb: 1 }}>EC購入候補（最大10件）</Typography><Stack spacing={1}>{ecPurchaseCandidates.map((candidate, index) => <Box key={index} sx={{ border: 1, borderColor: 'divider', borderRadius: 1, p: 1.5 }}><Stack direction="row" spacing={1} alignItems="center"><Typography variant="caption" color="text.secondary">候補 {index + 1}</Typography><FormControlLabel sx={{ m: 0 }} control={<Checkbox size="small" checked={candidate.purchasePlanned} disabled={busy || !candidate.storeProductName || !candidate.url || candidate.price === ''} onChange={event => { setEcPurchaseCandidates(current => current.map((value, candidateIndex) => candidateIndex === index ? { ...value, purchasePlanned: event.target.checked } : value)); if (event.target.checked) setInput(current => ({ ...current, status: 'quoted' })) }} />} label="購入予定候補" /></Stack><Stack spacing={1} sx={{ mt: 1 }}><TextField label="ストア掲載商品名" value={candidate.storeProductName} disabled={busy} slotProps={{ htmlInput: { maxLength: 500 } }} onChange={event => setEcPurchaseCandidates(current => current.map((value, candidateIndex) => candidateIndex === index ? { ...value, storeProductName: event.target.value } : value))} /><TextField label="URL" type="url" value={candidate.url} disabled={busy} slotProps={{ htmlInput: { maxLength: 2000 } }} onChange={event => setEcPurchaseCandidates(current => current.map((value, candidateIndex) => candidateIndex === index ? { ...value, url: event.target.value } : value))} />{/^https?:\/\/.+/i.test(candidate.url) && <Link href={candidate.url} target="_blank" rel="noopener noreferrer">商品ページを開く</Link>}<TextField label="価格（円）" type="number" value={candidate.price} disabled={busy} slotProps={{ htmlInput: { min: 0, step: 1 } }} onChange={event => setEcPurchaseCandidates(current => current.map((value, candidateIndex) => candidateIndex === index ? { ...value, price: event.target.value } : value))} /></Stack></Box>)}</Stack></Box>
         <Box><Typography variant="subtitle2">対応先（1つ以上選択）</Typography><FormGroup row><FormControlLabel control={<Checkbox checked={input.supplierQuoteRequestEnabled} disabled={busy} onChange={event => setInput(current => ({ ...current, supplierQuoteRequestEnabled: event.target.checked }))} />} label="仕入先見積依頼" /><FormControlLabel control={<Checkbox checked={input.marketplaceOfferEnabled} disabled={busy} onChange={event => setInput(current => ({ ...current, marketplaceOfferEnabled: event.target.checked }))} />} label="EC購入候補" /></FormGroup></Box>
         <TextField label="希望納期" type="date" slotProps={{ inputLabel: { shrink: true } }} value={input.requestedDeliveryDate} disabled={busy} onChange={event => setInput(current => ({ ...current, requestedDeliveryDate: event.target.value }))} />
@@ -87,7 +114,7 @@ export function RfqItemDialog({ rfqId, item, products, onClose, onSaved }: { rfq
           {RFQ_ITEM_STATUSES.map(status => <MenuItem key={status} value={status}>{rfqItemStatusLabels[status]}</MenuItem>)}
         </TextField>
       </Stack></DialogContent>
-      <DialogActions><Button onClick={onClose} disabled={busy}>キャンセル</Button><Button type="submit" variant="contained" disabled={busy}>{busy ? '保存中…' : '保存'}</Button></DialogActions>
+      <DialogActions><Button onClick={onClose} disabled={busy}>キャンセル</Button><Button type="submit" variant="contained" disabled={busy}>{busy && !searching ? '保存中…' : '保存'}</Button></DialogActions>
     </Box>
   </Dialog>
   {rakutenSearchOpen && <RakutenSearchDialog initialKeyword={`${input.manufacturerName.trim()} ${input.partNumber.trim()}`} close={() => setRakutenSearchOpen(false)} selectTopResults={results => addRakutenCandidates(results)} />}

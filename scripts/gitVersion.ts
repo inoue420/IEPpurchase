@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 
 /** Read only at Vite startup/build time. Git is never accessed by the browser. */
-export function readGitVersion(repositoryPath: string): string {
+export function readGitVersion(repositoryPath: string, development = false): string {
   const git = (...args: string[]) => execFileSync('git', args, {
     cwd: repositoryPath,
     encoding: 'utf8',
@@ -23,7 +23,7 @@ export function readGitVersion(repositoryPath: string): string {
     if (!match) return `${git('rev-parse', '--short', 'HEAD')}${dirty ? '-dirty' : ''}（開発版）`
 
     const [, tag, distance, commit] = match
-    if (distance === '0' && !dirty) return tag
+    if (distance === '0' && !dirty) return development ? `${tag}（開発版）` : tag
     const version = distance === '0' ? tag : `${tag}-${distance}-g${commit}`
     return `${version}${dirty ? '-dirty' : ''}（開発版）`
   } catch {

@@ -1,17 +1,20 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager'
 import { getFirestore, Timestamp } from 'firebase-admin/firestore'
-import { defineSecret } from 'firebase-functions/params'
+import { defineBoolean, defineSecret } from 'firebase-functions/params'
 import { HttpsError, onCall, onRequest } from 'firebase-functions/v2/https'
 import { safeOAuthDescription } from './freeeDiagnostics'
+import { parseFreeeAppCredentials } from './secretCredentials'
+import { readOAuthTokenPayload, storeOAuthTokenPayload } from './oauthTokenStore'
+import { freeeTokenMetadata } from './freeeTokenMetadata'
 
 const REGION = 'asia-northeast1'
 const AUTHORIZE_URL = 'https://accounts.secure.freee.co.jp/public_api/authorize'
 const TOKEN_URL = 'https://accounts.secure.freee.co.jp/public_api/token'
 const STATE_TTL_MS = 10 * 60 * 1000
-const freeeClientId = defineSecret('FREEE_CLIENT_ID')
-const freeeClientSecret = defineSecret('FREEE_CLIENT_SECRET')
-const freeeOAuthTokens = defineSecret('FREEE_OAUTH_TOKENS')
+const freeeAppCredentials = defineSecret('FREEE_APP_CREDENTIALS')
+const freeeOAuthTokenName = 'FREEE_OAUTH_TOKENS'
+const pruneOldTokens = defineBoolean('FREEE_OAUTH_PRUNE_OLD_VERSIONS', { default: false, description: '全関数のトークン固定参照を外して旧版破棄を承認した後のみ有効化する' })
 const secretManager = new SecretManagerServiceClient()
 const db = getFirestore()
 
@@ -25,11 +28,11 @@ function codeDiagnostics(code: string): { length: number; hasWhitespace: boolean
 }
 function page(response: import('express').Response, status: number, title: string, message: string): void { response.status(status).type('html').send(`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body><h1>${title}</h1><p>${message}</p><p><a href="https://ieppurchase.web.app/">IEPpurchaseのトップページへ戻る</a></p></body></html>`) }
 
-export const getFreeeConnectionStatus = onCall({ region: REGION, invoker: 'public', secrets: [freeeOAuthTokens] }, async request => {
+export const getFreeeConnectionStatus = onCall({ region: REGION, invoker: 'public', secrets: [] }, async request => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
   try {
-    const [version] = await secretManager.accessSecretVersion({ name: `projects/${projectId()}/secrets/${freeeOAuthTokens.name}/versions/latest` })
-    const value = JSON.parse(Buffer.from(version.payload?.data as Uint8Array).toString('utf8')) as StoredTokens
+    const parent = `projects/${projectId()}/secrets/${freeeOAuthTokenName}`
+    const value = JSON.parse(await readOAuthTokenPayload(secretManager, parent, freeeTokenMetadata(parent))) as StoredTokens
     const authorizedAt = typeof value.authorizedAt === 'string' ? Date.parse(value.authorizedAt) : Number.NaN
     const expiresIn = typeof value.expiresIn === 'number' ? value.expiresIn : Number.NaN
     const connected = typeof value.accessToken === 'string'
@@ -43,9 +46,9 @@ export const getFreeeConnectionStatus = onCall({ region: REGION, invoker: 'publi
     return { connected: false }
   }
 })
-export const beginFreeeOAuth = onCall({ region: REGION, invoker: 'public', secrets: [freeeClientId] }, async request => {
+export const beginFreeeOAuth = onCall({ region: REGION, invoker: 'public', secrets: [freeeAppCredentials] }, async request => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
-  const clientId = freeeClientId.value()
+  const { clientId } = parseFreeeAppCredentials(freeeAppCredentials.value())
   if (!clientId) throw new HttpsError('failed-precondition', 'freee Client IDが未設定です。')
   const state = randomBytes(32).toString('base64url')
   await db.collection('freeeOAuthStates').doc(stateDocumentId(state)).create({ requestedBy: request.auth.uid, createdAt: Timestamp.now(), expiresAt: Timestamp.fromMillis(Date.now() + STATE_TTL_MS), clientIdHash: stateDocumentId(clientId), redirectUri: callbackUrl(), startRevision: process.env.K_REVISION ?? 'unknown' })
@@ -55,18 +58,19 @@ export const beginFreeeOAuth = onCall({ region: REGION, invoker: 'public', secre
 })
 
 async function exchangeCode(code: string): Promise<{ accessToken: string; refreshToken: string; expiresIn: number; companyId: string | null; scope: string | null }> {
-  const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: freeeClientId.value(), client_secret: freeeClientSecret.value(), code, redirect_uri: callbackUrl() })
+  const { clientId, clientSecret } = parseFreeeAppCredentials(freeeAppCredentials.value())
+  const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: clientId, client_secret: clientSecret, code, redirect_uri: callbackUrl() })
   const result = await fetch(TOKEN_URL, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body })
   if (!result.ok) {
     const errorBody = await result.json().catch(() => null) as { error?: unknown; error_description?: unknown } | null
-    const sensitive = [freeeClientId.value(), freeeClientSecret.value(), code]
+    const sensitive = [clientId, clientSecret, code]
     const errorCode = safeOAuthDescription(errorBody?.error, sensitive)
     const description = safeOAuthDescription(errorBody?.error_description, sensitive)
     const diagnostics = {
       revision: process.env.K_REVISION ?? 'unknown',
-      clientIdHasWhitespace: /\s/.test(freeeClientId.value()),
-      clientSecretHasWhitespace: /\s/.test(freeeClientSecret.value()),
-      clientSecretEmpty: freeeClientSecret.value().length === 0,
+      clientIdHasWhitespace: /\s/.test(clientId),
+      clientSecretHasWhitespace: /\s/.test(clientSecret),
+      clientSecretEmpty: clientSecret.length === 0,
     }
     throw new Error(`freee token endpoint returned ${result.status} (${errorCode}); description=${description}; diagnostics=${JSON.stringify(diagnostics)}; code=${JSON.stringify(codeDiagnostics(code))}; redirectUri=${callbackUrl()}`)
   }
@@ -76,10 +80,11 @@ async function exchangeCode(code: string): Promise<{ accessToken: string; refres
 }
 async function storeTokens(tokens: Awaited<ReturnType<typeof exchangeCode>>): Promise<void> {
   const payload = JSON.stringify({ ...tokens, authorizedAt: new Date().toISOString(), callbackUrl: callbackUrl() })
-  await secretManager.addSecretVersion({ parent: `projects/${projectId()}/secrets/${freeeOAuthTokens.name}`, payload: { data: Buffer.from(payload) } })
+  const parent = `projects/${projectId()}/secrets/${freeeOAuthTokenName}`
+  await storeOAuthTokenPayload(secretManager, parent, payload, freeeTokenMetadata(parent), pruneOldTokens.value())
 }
 
-export const freeeOAuthCallback = onRequest({ region: REGION, invoker: 'public', secrets: [freeeClientId, freeeClientSecret] }, async (request, response) => {
+export const freeeOAuthCallback = onRequest({ region: REGION, invoker: 'public', secrets: [freeeAppCredentials] }, async (request, response) => {
   if (request.method !== 'GET') return page(response, 405, '許可されていない要求です', 'GETリクエストのみ受け付けます。')
   const state = typeof request.query.state === 'string' ? request.query.state : ''
   const code = typeof request.query.code === 'string' ? request.query.code : ''
@@ -93,7 +98,7 @@ export const freeeOAuthCallback = onRequest({ region: REGION, invoker: 'public',
   console.info('freee OAuth exchange context', {
     revision: process.env.K_REVISION ?? 'unknown',
     startRevision: stateSnapshot.get('startRevision') ?? 'legacy',
-    clientIdMatches: typeof stateSnapshot.get('clientIdHash') === 'string' ? stateSnapshot.get('clientIdHash') === stateDocumentId(freeeClientId.value()) : null,
+    clientIdMatches: typeof stateSnapshot.get('clientIdHash') === 'string' ? stateSnapshot.get('clientIdHash') === stateDocumentId(parseFreeeAppCredentials(freeeAppCredentials.value()).clientId) : null,
     redirectUriMatches: typeof stateSnapshot.get('redirectUri') === 'string' ? stateSnapshot.get('redirectUri') === callbackUrl() : null,
     elapsedSinceStartMs: Date.now() - stateSnapshot.get('createdAt').toMillis(),
     codeFingerprint: codeDiagnostics(code).fingerprint,

@@ -7,13 +7,16 @@ const firestore_1 = require("firebase-admin/firestore");
 const params_1 = require("firebase-functions/params");
 const https_1 = require("firebase-functions/v2/https");
 const freeeDiagnostics_1 = require("./freeeDiagnostics");
+const secretCredentials_1 = require("./secretCredentials");
+const oauthTokenStore_1 = require("./oauthTokenStore");
+const freeeTokenMetadata_1 = require("./freeeTokenMetadata");
 const REGION = 'asia-northeast1';
 const AUTHORIZE_URL = 'https://accounts.secure.freee.co.jp/public_api/authorize';
 const TOKEN_URL = 'https://accounts.secure.freee.co.jp/public_api/token';
 const STATE_TTL_MS = 10 * 60 * 1000;
-const freeeClientId = (0, params_1.defineSecret)('FREEE_CLIENT_ID');
-const freeeClientSecret = (0, params_1.defineSecret)('FREEE_CLIENT_SECRET');
-const freeeOAuthTokens = (0, params_1.defineSecret)('FREEE_OAUTH_TOKENS');
+const freeeAppCredentials = (0, params_1.defineSecret)('FREEE_APP_CREDENTIALS');
+const freeeOAuthTokenName = 'FREEE_OAUTH_TOKENS';
+const pruneOldTokens = (0, params_1.defineBoolean)('FREEE_OAUTH_PRUNE_OLD_VERSIONS', { default: false, description: '全関数のトークン固定参照を外して旧版破棄を承認した後のみ有効化する' });
 const secretManager = new secret_manager_1.SecretManagerServiceClient();
 const db = (0, firestore_1.getFirestore)();
 function projectId() { const value = process.env.GCLOUD_PROJECT ?? process.env.GCP_PROJECT; if (!value)
@@ -24,12 +27,12 @@ function codeDiagnostics(code) {
     return { length: code.length, hasWhitespace: /\s/.test(code), fingerprint: (0, node_crypto_1.createHash)('sha256').update(code).digest('hex').slice(0, 12) };
 }
 function page(response, status, title, message) { response.status(status).type('html').send(`<!doctype html><html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><body><h1>${title}</h1><p>${message}</p><p><a href="https://ieppurchase.web.app/">IEPpurchaseのトップページへ戻る</a></p></body></html>`); }
-exports.getFreeeConnectionStatus = (0, https_1.onCall)({ region: REGION, invoker: 'public', secrets: [freeeOAuthTokens] }, async (request) => {
+exports.getFreeeConnectionStatus = (0, https_1.onCall)({ region: REGION, invoker: 'public', secrets: [] }, async (request) => {
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'ログインが必要です。');
     try {
-        const [version] = await secretManager.accessSecretVersion({ name: `projects/${projectId()}/secrets/${freeeOAuthTokens.name}/versions/latest` });
-        const value = JSON.parse(Buffer.from(version.payload?.data).toString('utf8'));
+        const parent = `projects/${projectId()}/secrets/${freeeOAuthTokenName}`;
+        const value = JSON.parse(await (0, oauthTokenStore_1.readOAuthTokenPayload)(secretManager, parent, (0, freeeTokenMetadata_1.freeeTokenMetadata)(parent)));
         const authorizedAt = typeof value.authorizedAt === 'string' ? Date.parse(value.authorizedAt) : Number.NaN;
         const expiresIn = typeof value.expiresIn === 'number' ? value.expiresIn : Number.NaN;
         const connected = typeof value.accessToken === 'string'
@@ -44,10 +47,10 @@ exports.getFreeeConnectionStatus = (0, https_1.onCall)({ region: REGION, invoker
         return { connected: false };
     }
 });
-exports.beginFreeeOAuth = (0, https_1.onCall)({ region: REGION, invoker: 'public', secrets: [freeeClientId] }, async (request) => {
+exports.beginFreeeOAuth = (0, https_1.onCall)({ region: REGION, invoker: 'public', secrets: [freeeAppCredentials] }, async (request) => {
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'ログインが必要です。');
-    const clientId = freeeClientId.value();
+    const { clientId } = (0, secretCredentials_1.parseFreeeAppCredentials)(freeeAppCredentials.value());
     if (!clientId)
         throw new https_1.HttpsError('failed-precondition', 'freee Client IDが未設定です。');
     const state = (0, node_crypto_1.randomBytes)(32).toString('base64url');
@@ -61,18 +64,19 @@ exports.beginFreeeOAuth = (0, https_1.onCall)({ region: REGION, invoker: 'public
     return { authorizationUrl: authorizationUrl.toString() };
 });
 async function exchangeCode(code) {
-    const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: freeeClientId.value(), client_secret: freeeClientSecret.value(), code, redirect_uri: callbackUrl() });
+    const { clientId, clientSecret } = (0, secretCredentials_1.parseFreeeAppCredentials)(freeeAppCredentials.value());
+    const body = new URLSearchParams({ grant_type: 'authorization_code', client_id: clientId, client_secret: clientSecret, code, redirect_uri: callbackUrl() });
     const result = await fetch(TOKEN_URL, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body });
     if (!result.ok) {
         const errorBody = await result.json().catch(() => null);
-        const sensitive = [freeeClientId.value(), freeeClientSecret.value(), code];
+        const sensitive = [clientId, clientSecret, code];
         const errorCode = (0, freeeDiagnostics_1.safeOAuthDescription)(errorBody?.error, sensitive);
         const description = (0, freeeDiagnostics_1.safeOAuthDescription)(errorBody?.error_description, sensitive);
         const diagnostics = {
             revision: process.env.K_REVISION ?? 'unknown',
-            clientIdHasWhitespace: /\s/.test(freeeClientId.value()),
-            clientSecretHasWhitespace: /\s/.test(freeeClientSecret.value()),
-            clientSecretEmpty: freeeClientSecret.value().length === 0,
+            clientIdHasWhitespace: /\s/.test(clientId),
+            clientSecretHasWhitespace: /\s/.test(clientSecret),
+            clientSecretEmpty: clientSecret.length === 0,
         };
         throw new Error(`freee token endpoint returned ${result.status} (${errorCode}); description=${description}; diagnostics=${JSON.stringify(diagnostics)}; code=${JSON.stringify(codeDiagnostics(code))}; redirectUri=${callbackUrl()}`);
     }
@@ -83,9 +87,10 @@ async function exchangeCode(code) {
 }
 async function storeTokens(tokens) {
     const payload = JSON.stringify({ ...tokens, authorizedAt: new Date().toISOString(), callbackUrl: callbackUrl() });
-    await secretManager.addSecretVersion({ parent: `projects/${projectId()}/secrets/${freeeOAuthTokens.name}`, payload: { data: Buffer.from(payload) } });
+    const parent = `projects/${projectId()}/secrets/${freeeOAuthTokenName}`;
+    await (0, oauthTokenStore_1.storeOAuthTokenPayload)(secretManager, parent, payload, (0, freeeTokenMetadata_1.freeeTokenMetadata)(parent), pruneOldTokens.value());
 }
-exports.freeeOAuthCallback = (0, https_1.onRequest)({ region: REGION, invoker: 'public', secrets: [freeeClientId, freeeClientSecret] }, async (request, response) => {
+exports.freeeOAuthCallback = (0, https_1.onRequest)({ region: REGION, invoker: 'public', secrets: [freeeAppCredentials] }, async (request, response) => {
     if (request.method !== 'GET')
         return page(response, 405, '許可されていない要求です', 'GETリクエストのみ受け付けます。');
     const state = typeof request.query.state === 'string' ? request.query.state : '';
@@ -107,7 +112,7 @@ exports.freeeOAuthCallback = (0, https_1.onRequest)({ region: REGION, invoker: '
     console.info('freee OAuth exchange context', {
         revision: process.env.K_REVISION ?? 'unknown',
         startRevision: stateSnapshot.get('startRevision') ?? 'legacy',
-        clientIdMatches: typeof stateSnapshot.get('clientIdHash') === 'string' ? stateSnapshot.get('clientIdHash') === stateDocumentId(freeeClientId.value()) : null,
+        clientIdMatches: typeof stateSnapshot.get('clientIdHash') === 'string' ? stateSnapshot.get('clientIdHash') === stateDocumentId((0, secretCredentials_1.parseFreeeAppCredentials)(freeeAppCredentials.value()).clientId) : null,
         redirectUriMatches: typeof stateSnapshot.get('redirectUri') === 'string' ? stateSnapshot.get('redirectUri') === callbackUrl() : null,
         elapsedSinceStartMs: Date.now() - stateSnapshot.get('createdAt').toMillis(),
         codeFingerprint: codeDiagnostics(code).fingerprint,

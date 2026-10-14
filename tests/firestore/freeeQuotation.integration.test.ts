@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
 import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs } from 'firebase/firestore'
 import type { QuoteSettings, QuotePreview, FreeeQuotePayload } from '../../functions/src/salesQuoteModel'
+import type { OAuthTokenMetadataStore, OAuthTokenSecretManager } from '../../functions/src/oauthTokenStore'
 
 const functionRequire = createRequire(new URL('../../functions/package.json', import.meta.url))
 const { initializeApp, deleteApp } = functionRequire('firebase-admin/app') as typeof import('../../functions/node_modules/firebase-admin/lib/app')
@@ -12,7 +13,16 @@ const { SecretManagerServiceClient } = functionRequire('@google-cloud/secret-man
 interface Saved { revision: number; digest: string; preview: QuotePreview; payload: FreeeQuotePayload; status: string; marker: string }
 type Callable = { run: (request: { auth?: { uid: string }; data: Record<string, unknown> }) => Promise<Saved & { result?: { id: number }; status: string }> }
 const { saveSalesQuotePricing, sendFreeeQuotation, reconcileFreeeQuotation } = functionRequire('./lib/freeeQuotation.js') as Record<string, Callable>
+const { freeeTokenMetadata, FREEE_TOKEN_METADATA_PATH } = functionRequire('./lib/freeeTokenMetadata.js') as {
+  freeeTokenMetadata: (parent: string) => OAuthTokenMetadataStore
+  FREEE_TOKEN_METADATA_PATH: string
+}
+const { storeOAuthTokenPayload } = functionRequire('./lib/oauthTokenStore.js') as {
+  storeOAuthTokenPayload: (manager: OAuthTokenSecretManager, parent: string, payload: string, metadata: OAuthTokenMetadataStore, prune: boolean) => Promise<void>
+}
 const projectId = 'demo-ieppurchase-freee-test'
+const tokenParent = `projects/${projectId}/secrets/FREEE_OAUTH_TOKENS`
+const tokenVersion = `${tokenParent}/versions/18`
 let env: RulesTestEnvironment
 let app: ReturnType<typeof initializeApp>
 let db: ReturnType<typeof getFirestore>
@@ -28,21 +38,105 @@ beforeAll(async () => {
   const hostValue = process.env.FIRESTORE_EMULATOR_HOST
   if (!hostValue || !/^(127\.0\.0\.1|localhost):\d+$/.test(hostValue)) throw new Error('Local emulator is required. No production access is allowed.')
   const [host, port] = hostValue.split(':')
+  vi.stubEnv('GCLOUD_PROJECT', projectId)
   app = initializeApp({ projectId }); db = getFirestore(app)
   env = await initializeTestEnvironment({ projectId, firestore: { host, port: Number(port), rules: readFileSync(new URL('../../firestore.rules', import.meta.url), 'utf8') } })
 })
 beforeEach(async () => {
   vi.restoreAllMocks(); vi.unstubAllGlobals()
   // All Secret Manager and freee HTTP calls are replaced. Only the local DB is real.
-  vi.spyOn(SecretManagerServiceClient.prototype, 'accessSecretVersion').mockImplementation((() => Promise.resolve([{ payload: { data: Buffer.from(JSON.stringify({ companyId: '456', accessToken: 'FAKE', authorizedAt: new Date().toISOString(), expiresIn: 21600 })) } }])) as never)
+  vi.spyOn(SecretManagerServiceClient.prototype, 'accessSecretVersion').mockImplementation(((request: { name?: string }) => Promise.resolve([{ name: request.name, payload: { data: Buffer.from(JSON.stringify({ companyId: '456', accessToken: 'FAKE', authorizedAt: new Date().toISOString(), expiresIn: 21600 })) } }])) as never)
   await env.clearFirestore()
+  await db.doc(FREEE_TOKEN_METADATA_PATH).set({ currentVersion: tokenVersion, updatedAt: Timestamp.now() })
   await db.doc('rfqs/rfq').set({ status: 'quoting', customerId: 'customer', customerName: 'Customer' })
   await db.doc('rfqs/rfq/items/item').set({ manufacturerName: 'ACME' })
   await db.doc('salesQuotes/rfq').set({ rfqId: 'rfq', status: 'confirmed', confirmedAt: Timestamp.now() })
   await db.doc('salesQuotes/rfq/items/item').set({ ...source, confirmedAt: Timestamp.now() })
   vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Unexpected HTTP request') }))
 })
-afterAll(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await env?.cleanup(); if (app) await deleteApp(app) })
+afterAll(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await env?.cleanup(); if (app) await deleteApp(app) })
+
+describe('freee numeric token version metadata integration', () => {
+  it('uses the current numeric version when saving a quotation without reading latest', async () => {
+    const access = vi.mocked(SecretManagerServiceClient.prototype.accessSecretVersion)
+    await save()
+    expect(access).toHaveBeenCalledTimes(1)
+    expect(access).toHaveBeenCalledWith({ name: tokenVersion })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it('normalizes the API project number, verifies the numeric version and stores no token values in Firestore', async () => {
+    const nextVersion = `${tokenParent}/versions/19`
+    const apiVersionName = 'projects/123456789012/secrets/FREEE_OAUTH_TOKENS/versions/19'
+    const payload = JSON.stringify({ companyId: '456', accessToken: 'FAKE_NEW_ACCESS_SECRET', refreshToken: 'FAKE_NEW_REFRESH_SECRET', authorizedAt: new Date().toISOString(), expiresIn: 21600 })
+    const add = vi.spyOn(SecretManagerServiceClient.prototype, 'addSecretVersion').mockResolvedValue([{ name: apiVersionName }] as never)
+    const access = vi.mocked(SecretManagerServiceClient.prototype.accessSecretVersion).mockImplementation(((request: { name?: string }) => {
+      expect(request.name).toBe(nextVersion)
+      return Promise.resolve([{ name: apiVersionName, payload: { data: Buffer.from(payload) } }])
+    }) as never)
+    const list = vi.spyOn(SecretManagerServiceClient.prototype, 'listSecretVersions').mockResolvedValue([[]] as never)
+    const destroy = vi.spyOn(SecretManagerServiceClient.prototype, 'destroySecretVersion').mockResolvedValue([{}] as never)
+    await storeOAuthTokenPayload(new SecretManagerServiceClient(), tokenParent, payload, freeeTokenMetadata(tokenParent), false)
+    expect(add).toHaveBeenCalledWith({ parent: tokenParent, payload: { data: Buffer.from(payload) } })
+    expect(access).toHaveBeenCalledWith({ name: nextVersion })
+    expect(list).not.toHaveBeenCalled()
+    expect(destroy).not.toHaveBeenCalled()
+    const metadata = (await db.doc(FREEE_TOKEN_METADATA_PATH).get()).data()
+    expect(Object.keys(metadata ?? {}).sort()).toEqual(['currentVersion', 'updatedAt'])
+    expect(metadata?.currentVersion).toBe(nextVersion)
+    expect(metadata?.updatedAt).toBeInstanceOf(Timestamp)
+    expect(JSON.stringify(metadata)).not.toContain('FAKE_NEW_ACCESS_SECRET')
+    expect(JSON.stringify(metadata)).not.toContain('FAKE_NEW_REFRESH_SECRET')
+    expect((await db.collection('integrationSecrets').get()).size).toBe(1)
+  })
+  it('keeps the greatest numeric version when concurrent authorizations finish out of order', async () => {
+    const metadata = freeeTokenMetadata(tokenParent)
+    await db.doc(FREEE_TOKEN_METADATA_PATH).delete()
+    expect(await metadata.advance(`${tokenParent}/versions/9`)).toBe(true)
+    await Promise.all([10, 12, 11].map(version => metadata.advance(`${tokenParent}/versions/${version}`)))
+    expect(await metadata.read()).toBe(`${tokenParent}/versions/12`)
+    expect(await metadata.advance(`${tokenParent}/versions/10`)).toBe(false)
+    expect(await metadata.advance(`${tokenParent}/versions/12`)).toBe(false)
+    expect(await metadata.read()).toBe(`${tokenParent}/versions/12`)
+  })
+  it('rereads metadata when a previous token version is destroyed during a request', async () => {
+    const nextVersion = `${tokenParent}/versions/19`
+    const access = vi.mocked(SecretManagerServiceClient.prototype.accessSecretVersion).mockImplementation((async (request: { name?: string }) => {
+      if (request.name === tokenVersion) {
+        await freeeTokenMetadata(tokenParent).advance(nextVersion)
+        throw Object.assign(new Error('Old version was destroyed'), { code: 9 })
+      }
+      expect(request.name).toBe(nextVersion)
+      return [{ name: nextVersion, payload: { data: Buffer.from(JSON.stringify({ companyId: '456', accessToken: 'FAKE', authorizedAt: new Date().toISOString(), expiresIn: 21600 })) } }]
+    }) as never)
+    await save()
+    expect(access).toHaveBeenCalledTimes(2)
+    expect(access).toHaveBeenNthCalledWith(1, { name: tokenVersion })
+    expect(access).toHaveBeenNthCalledWith(2, { name: nextVersion })
+    expect((await ref().get()).get('status')).toBe('draft')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it('rejects metadata for other secrets and aliases before accessing a credential', async () => {
+    const access = vi.mocked(SecretManagerServiceClient.prototype.accessSecretVersion)
+    for (const currentVersion of [`${tokenParent}/versions/latest`, `projects/${projectId}/secrets/OTHER/versions/19`, `${tokenParent}/versions/0`]) {
+      await db.doc(FREEE_TOKEN_METADATA_PATH).update({ currentVersion })
+      await expect(save()).rejects.toMatchObject({ code: 'failed-precondition' })
+    }
+    expect(access).not.toHaveBeenCalled()
+    expect((await ref().get()).exists).toBe(false)
+  })
+  it('denies direct metadata reads, listing and writes to authenticated and anonymous clients', async () => {
+    for (const client of [env.authenticatedContext('user').firestore(), env.unauthenticatedContext().firestore()]) {
+      const metadata = doc(client, FREEE_TOKEN_METADATA_PATH)
+      await assertFails(getDoc(metadata))
+      await assertFails(getDocs(collection(client, 'integrationSecrets')))
+      await assertFails(setDoc(metadata, { currentVersion: `${tokenParent}/versions/999` }))
+      await assertFails(updateDoc(metadata, { currentVersion: `${tokenParent}/versions/999` }))
+      await assertFails(deleteDoc(metadata))
+      await assertFails(setDoc(doc(client, 'integrationSecrets/forged'), { currentVersion: `${tokenParent}/versions/999` }))
+    }
+    expect((await db.doc(FREEE_TOKEN_METADATA_PATH).get()).get('currentVersion')).toBe(tokenVersion)
+  })
+})
 
 describe('freee quotation transaction and authorization integration', () => {
   it('requires authentication and explicit send confirmation before credentials or HTTP', async () => {

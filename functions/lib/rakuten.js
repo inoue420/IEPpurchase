@@ -5,9 +5,9 @@ exports.parseRakutenItems = parseRakutenItems;
 exports.parseRakutenKeyword = parseRakutenKeyword;
 exports.fetchRakutenItems = fetchRakutenItems;
 const params_1 = require("firebase-functions/params");
+const secretCredentials_1 = require("./secretCredentials");
 const https_1 = require("firebase-functions/v2/https");
-const applicationId = (0, params_1.defineSecret)('RAKUTEN_APPLICATION_ID');
-const accessKey = (0, params_1.defineSecret)('RAKUTEN_ACCESS_KEY');
+const credentialsSecret = (0, params_1.defineSecret)('RAKUTEN_CREDENTIALS');
 const siteUrl = (0, params_1.defineString)('RAKUTEN_SITE_URL', { default: '', description: '楽天アプリに登録した許可WebサイトURL' });
 const record = (value) => value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const flag = (value) => value === 0 || value === 1 ? value : null;
@@ -71,9 +71,10 @@ async function fetchRakutenItems(keyword, appId, key, fetcher = fetch, website =
         throw new https_1.HttpsError('unavailable', '楽天検索に接続できませんでした。時間をおいて再検索してください。');
     }
 }
-exports.searchRakutenItems = (0, https_1.onCall)({ region: 'asia-northeast1', invoker: 'public', secrets: [applicationId, accessKey], timeoutSeconds: 30, maxInstances: 1, concurrency: 1 }, async (request) => {
+exports.searchRakutenItems = (0, https_1.onCall)({ region: 'asia-northeast1', invoker: 'public', secrets: [credentialsSecret], timeoutSeconds: 30, maxInstances: 1, concurrency: 1 }, async (request) => {
     if (!request.auth)
         throw new https_1.HttpsError('unauthenticated', 'ログインが必要です。');
     const keyword = parseRakutenKeyword(request.data);
-    return fetchRakutenItems(keyword, applicationId.value(), accessKey.value(), fetch, siteUrl.value());
+    const credentials = (0, secretCredentials_1.parseRakutenCredentials)(credentialsSecret.value());
+    return fetchRakutenItems(keyword, credentials.applicationId, credentials.accessKey, fetch, siteUrl.value());
 });

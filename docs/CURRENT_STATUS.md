@@ -1,4 +1,27 @@
-## 開発運用：Gitタグによるバージョン自動表示（2026-10-14・ユーザー確認待ち／本番未反映）
+## 開発運用：Secret Manager集約（2026-10-14・完了／ユーザー確認OK）
+- ユーザーの「2でお願い、既存には影響がないように」に対応。freeeのClient ID/SecretをFREEE_APP_CREDENTIALS、楽天のApplication ID/Access KeyをRAKUTEN_CREDENTIALSのJSONへ集約。稼働中の固定版からメモリ内でコピーし、本番の新しい固定版との値一致を確認。キーの再発行・認可URL・楽天の許可サイト・業務データ・画面・外部登録処理は変更していない。
+- freeeトークン利用5関数の固定Secret bindingを空一覧で明示解除。FirestoreのintegrationSecrets/freeeOAuthTokensには秘密値を含まないcurrentVersionとserver timestampのみを保存し、Secret Managerの数値版を参照する。API応答のproject番号を正規化、transactionで版番号の後戻りを防止し、破棄と読取りの競合時は最新の管理情報を再取得して再試行する。
+- 新版保存→数値版読み返し一致→管理情報更新の後だけ旧版を整理する処理を追加。移行中は自動整理FREEE_OAUTH_PRUNE_OLD_VERSIONSをfalseに保ち、ユーザー承認後にtrueへ変更してfreeeOAuthCallbackを本番再反映済み。tokenおよび旧4種類のラベルをFirebase CLIの自動prune対象から外し、移行中の旧版破棄を防止。Secret単位のaccessor／version manager権限を維持・設定。
+- 自動確認: typecheck・lint・フロントproduction build・Functions build成功。フロント198件、Functions40件、Firestore Emulator146件成功。新規のJSONパーサー・数値版・同時更新・秘密値非露出・一般ユーザーの管理情報読書拒否・空binding manifestを検証。sandboxの一時ファイルrename／ローカル接続制約は許可済み再実行で解消。既存lint警告1件とbuildの依存注釈・bundleサイズ警告は継続。
+- 対象8関数を本番更新済み。初回の新boolean設定未指定をfalse明示で修正。設定の省略では旧bindingが残ることを本番確認で検出し、空一覧を明示して5関数を再反映。Cloud Functions第1/第2世代の参照とCloud Runの実配信revisionを照合し、対象8関数がACTIVE・新revisionへ100%配信・旧bindingなしを確認。
+- 本番確認: 楽天の実検索で20件取得、未認証Callable401・state無しOAuth callback400を確認。freeeトークン18は移行前から期限切れのため、実再認可とfreee見積登録は未実施。実行service accountへのなり代わり検証は403のため未実施（権限を拡張せず、Secret単位accessorを設定して維持）。
+- 2026-10-14にユーザーが「旧27件の破棄と今後の自動整理を承認する」と明示承認。本番の全Functions参照・対象の実配信revision・保持6版がENABLEDであること・currentVersionを再確認し、承認済み旧27版を破棄済み。33保管版から、新しい静的2版＋トークン18＋翻訳/OCR3版＝6版へ削減。旧名のSecretと破棄版のメタデータは残すが、有効／無効の保管版は0でありその旧版の保管課金は停止。
+- 最終本番確認（2026-10-14）: 保管6版、対象8関数ACTIVE／新revision100%配信、旧bindingなし、元のキーのコピー一致を示すimmutable版の確認記録、tokenのaccessor／version manager権限、自動整理trueを確認。楽天実検索20件・Callable401・OAuth callback400も再確認。実freee再認可・実行service accountへのなり代わり（403）は未実施を維持。
+- ユーザー確認（2026-10-14）: 「freeeと楽天は動作することを確認しました。」と動作確認OKを受領。続いて秘密値を取得しない本番メタデータ監査で、freeeのcurrentVersionが19へ進み、トークン19だけがENABLED、旧18を含む旧トークン版が整理済み、総保管版が6件、自動整理true、旧静的4種類の有効／無効版が0件を確認。実再認可後の版更新・自動整理を本番で確認できた。なり代わりによる検証（403）とfreee見積の実登録は引き続き未実施で、ユーザーの連携動作確認と区別する。監査結果: tmp/secret-credentials-migration/user-confirmation-audit.json。
+- 破棄版を参照する旧Cloud Run revisionへ直接切戻しはできない。集約Secretから旧名を再作成して旧ソースを再deployする復旧手順はdocs/SECRET_MANAGER.md。値を含まない承認対象一覧はtmp/secret-credentials-migration/approved-cleanup-plan.json、実行結果はfinalized.json、最終確認はverified.json／smoke.jsonへ記録。
+- 通常保管6版でも再認可の安全な追加・整理中は一時7版以上となる。既発生料金・月1万回を超える読取り・別サービス費用は別扱いで、完全0円は保証しない。管理シート更新不要（運用費用の改善）。コミット未実施。既存のdevバージョン関連未コミット変更は保持。
+- 主な変更: functions/src/freee.ts、freeeQuotation.ts、rakuten.ts、secretCredentials.ts、oauthTokenStore.ts、freeeTokenMetadata.ts、scripts/migrateSecretCredentials.cjs。移行・復旧手順: docs/SECRET_MANAGER.md。値を含まない本番確認結果・破棄一覧: tmp/secret-credentials-migration/。
+- 次の作業: 今回のSecret Manager費用改善は完了。次の機能はユーザーの指示に従う。
+
+## 開発運用：dev起動時の開発版表示（2026-10-14・ユーザー確認待ち）
+- ユーザーがビルド後のv1.0.1表示を確認。変更のないタグ付きコミットではdev起動時にも正式番号のみとなる従来仕様に対し、開発サーバーでは常に「（開発版）」を表示するよう追加修正。
+- Viteのcommandがserveの場合に開発版指定を渡す。変更のないタグ付きコードはdevで`v1.0.1（開発版）`、buildで`v1.0.1`。変更・タグ以降の更新・Git取得不能の既存表示は維持。
+- 自動確認: typecheck・lint・production build成功。関連テスト8件成功（cleanタグのdev/build表示差とdirty時の表示を含む）。初回sandbox一時ファイルrenameのEPERMを再実行で解消。lintの既存tmp警告とbuildの既存依存注釈・bundleサイズ警告は継続。
+- 開発サーバーの起動成功を確認。配信モジュールのHTTP取得はsandboxのソケット制約と再試行の応答待ちで確認未完了。実ログイン後の表示はユーザー確認待ち。
+- 主な変更: vite.config.ts、scripts/gitVersion.ts、scripts/gitVersion.test.ts、docs/RELEASE.md。管理シート更新不要（開発運用の補助変更）。コミット・タグ作成・本番反映は実行していない。
+- 次の作業: 起動中のdevを停止して`npm run dev`で再起動し、アカウント下に「（開発版）」が表示されることをユーザー確認する。
+
+## 開発運用：Gitタグによるバージョン自動表示（2026-10-14・ユーザー確認OK／ビルド後表示確認済み）
 - ユーザー指示により、ログイン後の共通アカウント欄でメールアドレスの下へバージョンを表示。Viteの起動・ビルド時にGitタグを文字列として埋め込み、ブラウザでGit/GitHubアクセスは行わない。
 - `v1.0.0`形式の軽量タグ・注釈付きタグに対応。タグ付きコミットかつ変更なしの場合のみ正式番号を表示。タグ以降のコミット、未コミット・未追跡ファイルは開発版と区別。Git・タグ取得不能でも通常のdev/buildを利用可能。
 - 既存の`npm run build`とHosting deployを維持。docs/RELEASE.mdへVS Codeコミット・同期後の4行、既存タグの保持、再ビルド、過去版取り出しの手順を追加。

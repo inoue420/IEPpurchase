@@ -2,13 +2,15 @@ import { parsePartner, readFreeePartners } from './freeePartners'
 import { createHash } from 'node:crypto'
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager'
 import { FieldValue, Timestamp, getFirestore } from 'firebase-admin/firestore'
-import { defineSecret } from 'firebase-functions/params'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
 import { hasUnsupportedFreeeDescription, buildQuotePreview, parseQuoteSettings, record, toFreeePayload, type ConfirmedLine, type QuotePreview, type FreeeQuotePayload } from './salesQuoteModel'
 import { createFreeeQuotation, FreeeRequestError, freeeResult, type FreeeResult } from './freeeQuotationTransport'
+import { readOAuthTokenPayload } from './oauthTokenStore'
+import { freeeTokenMetadata } from './freeeTokenMetadata'
 
-const tokensSecret = defineSecret('FREEE_OAUTH_TOKENS')
-const options = { region: 'asia-northeast1', invoker: 'public' as const, secrets: [tokensSecret], timeoutSeconds: 60 }
+const tokensSecretName = 'FREEE_OAUTH_TOKENS'
+// Explicit [] clears the previous deployment's fixed bindings during PATCH.
+const options = { region: 'asia-northeast1', invoker: 'public' as const, secrets: [], timeoutSeconds: 60 }
 const manager = new SecretManagerServiceClient()
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 function id(value: unknown): string {
@@ -19,11 +21,11 @@ function input(value: unknown): Record<string, unknown> {
   try { return record(value) } catch { throw new HttpsError('invalid-argument', '入力形式が不正です。') }
 }
 async function connection(requireValidToken: boolean): Promise<{ companyId: number; accessToken: string }> {
-  // Read latest explicitly: a deployed secret binding would keep an old OAuth version.
+  // Read the current numeric version: fixed bindings and the latest alias can lag.
   try {
     const project = process.env.GCLOUD_PROJECT ?? process.env.GCP_PROJECT
-    const [version] = await manager.accessSecretVersion({ name: `projects/${project}/secrets/${tokensSecret.name}/versions/latest` })
-    const token = record(JSON.parse(Buffer.from(version.payload?.data as Uint8Array).toString('utf8')))
+    const parent = `projects/${project}/secrets/${tokensSecretName}`
+    const token = record(JSON.parse(await readOAuthTokenPayload(manager, parent, freeeTokenMetadata(parent))))
     const companyId = Number(token.companyId)
     if (!Number.isSafeInteger(companyId) || companyId <= 0 || typeof token.accessToken !== 'string' || !token.accessToken) throw new Error('invalid token')
     const expiresAt = typeof token.authorizedAt === 'string' && typeof token.expiresIn === 'number' ? Date.parse(token.authorizedAt) + token.expiresIn * 1000 : 0

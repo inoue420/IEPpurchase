@@ -41,6 +41,14 @@ describe('Git release version', () => {
     expect(readGitVersion(repositoryPath)).toBe('v1.0.0')
   })
 
+  it('always labels the dev server as development, even at a clean release tag', () => {
+    git('tag', 'v1.0.1')
+    expect(readGitVersion(repositoryPath, true)).toBe('v1.0.1（開発版）')
+    expect(readGitVersion(repositoryPath, false)).toBe('v1.0.1')
+    writeFileSync(join(repositoryPath, 'app.txt'), 'uncommitted\n')
+    expect(readGitVersion(repositoryPath, true)).toBe('v1.0.1-dirty（開発版）')
+  })
+
   it('does not report changes after a tagged release as that release', () => {
     git('tag', 'v1.0.0')
     writeFileSync(join(repositoryPath, 'app.txt'), 'updated\n')

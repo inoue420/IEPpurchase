@@ -1,8 +1,8 @@
 import { defineSecret, defineString } from 'firebase-functions/params'
+import { parseRakutenCredentials } from './secretCredentials'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
 
-const applicationId = defineSecret('RAKUTEN_APPLICATION_ID')
-const accessKey = defineSecret('RAKUTEN_ACCESS_KEY')
+const credentialsSecret = defineSecret('RAKUTEN_CREDENTIALS')
 const siteUrl = defineString('RAKUTEN_SITE_URL', { default: '', description: '楽天アプリに登録した許可WebサイトURL' })
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const flag = (value: unknown): number | null => value === 0 || value === 1 ? value : null
@@ -41,8 +41,9 @@ export async function fetchRakutenItems(keyword: string, appId: string, key: str
     throw new HttpsError('unavailable', '楽天検索に接続できませんでした。時間をおいて再検索してください。')
   }
 }
-export const searchRakutenItems = onCall({ region: 'asia-northeast1', invoker: 'public', secrets: [applicationId, accessKey], timeoutSeconds: 30, maxInstances: 1, concurrency: 1 }, async request => {
+export const searchRakutenItems = onCall({ region: 'asia-northeast1', invoker: 'public', secrets: [credentialsSecret], timeoutSeconds: 30, maxInstances: 1, concurrency: 1 }, async request => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
   const keyword = parseRakutenKeyword(request.data)
-  return fetchRakutenItems(keyword, applicationId.value(), accessKey.value(), fetch, siteUrl.value())
+  const credentials = parseRakutenCredentials(credentialsSecret.value())
+  return fetchRakutenItems(keyword, credentials.applicationId, credentials.accessKey, fetch, siteUrl.value())
 })

@@ -5,12 +5,14 @@ const freeePartners_1 = require("./freeePartners");
 const node_crypto_1 = require("node:crypto");
 const secret_manager_1 = require("@google-cloud/secret-manager");
 const firestore_1 = require("firebase-admin/firestore");
-const params_1 = require("firebase-functions/params");
 const https_1 = require("firebase-functions/v2/https");
 const salesQuoteModel_1 = require("./salesQuoteModel");
 const freeeQuotationTransport_1 = require("./freeeQuotationTransport");
-const tokensSecret = (0, params_1.defineSecret)('FREEE_OAUTH_TOKENS');
-const options = { region: 'asia-northeast1', invoker: 'public', secrets: [tokensSecret], timeoutSeconds: 60 };
+const oauthTokenStore_1 = require("./oauthTokenStore");
+const freeeTokenMetadata_1 = require("./freeeTokenMetadata");
+const tokensSecretName = 'FREEE_OAUTH_TOKENS';
+// Explicit [] clears the previous deployment's fixed bindings during PATCH.
+const options = { region: 'asia-northeast1', invoker: 'public', secrets: [], timeoutSeconds: 60 };
 const manager = new secret_manager_1.SecretManagerServiceClient();
 const hash = (value) => (0, node_crypto_1.createHash)('sha256').update(JSON.stringify(value)).digest('hex');
 function id(value) {
@@ -27,11 +29,11 @@ function input(value) {
     }
 }
 async function connection(requireValidToken) {
-    // Read latest explicitly: a deployed secret binding would keep an old OAuth version.
+    // Read the current numeric version: fixed bindings and the latest alias can lag.
     try {
         const project = process.env.GCLOUD_PROJECT ?? process.env.GCP_PROJECT;
-        const [version] = await manager.accessSecretVersion({ name: `projects/${project}/secrets/${tokensSecret.name}/versions/latest` });
-        const token = (0, salesQuoteModel_1.record)(JSON.parse(Buffer.from(version.payload?.data).toString('utf8')));
+        const parent = `projects/${project}/secrets/${tokensSecretName}`;
+        const token = (0, salesQuoteModel_1.record)(JSON.parse(await (0, oauthTokenStore_1.readOAuthTokenPayload)(manager, parent, (0, freeeTokenMetadata_1.freeeTokenMetadata)(parent))));
         const companyId = Number(token.companyId);
         if (!Number.isSafeInteger(companyId) || companyId <= 0 || typeof token.accessToken !== 'string' || !token.accessToken)
             throw new Error('invalid token');

@@ -1,9 +1,11 @@
 import type { RfqItemInput } from './rfqItemRepository'
 import { parseBulkRfqItems, type BulkRfqItemDraft } from './bulkRfqItemParser'
+import { withoutDeliveryLocationHeader } from '../deliveryLocations/deliveryLocationExtraction'
 
 const unitPattern = '(個|本|枚|台|組|セット|箱|袋|巻|m|M|kg|KG|g|G|L|l)'
 const blank = (): RfqItemInput => ({ originalDescription: '', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 1, supplierResponseUnitPrice: null, unit: '個', supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: '', status: 'pending', note: '' })
 export function parseVisionOcrItems(text: string): BulkRfqItemDraft[] {
+  text = withoutDeliveryLocationHeader(text)
   const lines = text.replace(/\r/g, '').split('\n').filter(line => line.trim())
   const header = lines[0]?.split('\t').map(value => value.trim()) ?? []
   const hasQuantity = header.some(value => /^(数量|qty|quantity)$/i.test(value))

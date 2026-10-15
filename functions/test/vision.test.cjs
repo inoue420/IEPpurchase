@@ -51,6 +51,15 @@ test('flattens synchronous PDF page responses', async () => {
   assert.deepEqual(result, { text: 'page 1\npage 2', confidence: 0.8, pageCount: 2 })
 })
 
+test('keeps delivery headers when OCR reconstructs only the item table', async () => {
+  const annotation = { text: '納品先：東京倉庫\nメーカー 製品名 数量\nACME Bolt 2', pages: [{ width: 500, blocks: [{ paragraphs: [{ words: [
+    word('メーカー', 60, 30, 120, 45), word('製品名', 250, 30, 310, 45), word('数量', 455, 30, 480, 45),
+    word('ACME', 45, 60, 110, 75), word('Bolt', 150, 60, 330, 75), word('2', 460, 60, 470, 75),
+  ] }] }] }] }
+  const result = await extractVisionText({ mimeType: 'image/png', contentBase64: 'YQ==' }, 'key', async () => new Response(JSON.stringify({ responses: [{ fullTextAnnotation: annotation }] })))
+  assert.equal(result.text, '納品場所：東京倉庫\nメーカー名\t詳細\t数量\nACME\tBolt\t2')
+})
+
 test('uses word coordinates to restore table rows and columns', () => {
   const annotation = { pages: [{ width: 520, blocks: [{ paragraphs: [{ words: [
     word('メーカー', 50, 10, 120, 25), word('製品名', 260, 10, 330, 25), word('数量', 465, 10, 500, 25),

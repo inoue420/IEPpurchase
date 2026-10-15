@@ -8,6 +8,8 @@ exports.freeeDescription = freeeDescription;
 exports.buildQuotePreview = buildQuotePreview;
 exports.freeeQuotationMemo = freeeQuotationMemo;
 exports.toFreeePayload = toFreeePayload;
+// Pure model shared by the browser preview and the server. Money is JPY.
+const deliveryLocationModel_1 = require("./deliveryLocationModel");
 function record(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
         throw new Error('入力形式が不正です。');
@@ -53,6 +55,10 @@ function calculateSalesUnitPrice(purchaseAmount, shippingFee, margin) {
 }
 function parseQuoteSettings(value) {
     const d = record(value);
+    const locationName = (0, deliveryLocationModel_1.deliveryLocationName)(d.deliveryLocationName ?? '');
+    const locationId = text(d.deliveryLocationId ?? '', '納品場所ID', 128, false);
+    if ((locationId && !/^[A-Za-z0-9_-]+$/.test(locationId)) || Boolean(locationId) !== Boolean(locationName))
+        throw new Error('納品場所の選択が不正です。RFQで保存し直してください。');
     const partnerId = text(d.partnerId, 'freee取引先ID', 16);
     // freee receives this as a numeric ID. Preserve a user-entered leading-zero form
     // in the draft, while accepting it when its numeric value is a positive safe integer.
@@ -85,6 +91,7 @@ function parseQuoteSettings(value) {
     if (typeof d.translationsReviewed !== 'boolean')
         throw new Error('翻訳確認の指定が不正です。');
     return {
+        deliveryLocationId: locationId, deliveryLocationName: locationName,
         partnerId, quotationDate, expirationDate, prices, translationsReviewed: d.translationsReviewed,
         subject: text(d.subject, '件名', 255), quotationNumber: text(d.quotationNumber, '見積書番号', 255, false),
         partnerTitle: choice(d.partnerTitle, ['御中', '様', '(空白)'], '敬称'),
@@ -166,6 +173,7 @@ function toFreeePayload(preview, companyId, memo) {
         company_id: companyId, partner_id: Number(s.partnerId), quotation_date: s.quotationDate,
         ...(s.expirationDate ? { expiration_date: s.expirationDate } : {}),
         ...(s.quotationNumber ? { quotation_number: s.quotationNumber } : {}),
+        ...(s.deliveryLocationName ? { delivery_location: s.deliveryLocationName } : {}),
         subject: s.subject, partner_title: s.partnerTitle, tax_entry_method: s.taxEntryMethod,
         tax_fraction: s.taxFraction, line_amount_fraction: s.lineAmountFraction,
         withholding_tax_entry_method: 'out', quotation_note: s.note, memo,

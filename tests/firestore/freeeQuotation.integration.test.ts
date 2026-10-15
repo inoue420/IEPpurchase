@@ -57,6 +57,68 @@ beforeEach(async () => {
 })
 afterAll(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await env?.cleanup(); if (app) await deleteApp(app) })
 
+describe('delivery location quotation integration', () => {
+  const location = { deliveryLocationId: 'a'.repeat(64), deliveryLocationName: '東京倉庫' }
+  async function selectLocation(name = '東京倉庫') {
+    const selected = { ...location, deliveryLocationName: name }
+    await db.doc(`deliveryLocations/${location.deliveryLocationId}`).set({ name, active: true })
+    await db.doc('rfqs/rfq').update(selected)
+    return selected
+  }
+  it('resolves the authoritative master, snapshots it and sends the selected location via POST', async () => {
+    await selectLocation()
+    const saved = await save()
+    expect(saved.preview.settings).toMatchObject(location)
+    expect(saved.payload.delivery_location).toBe('東京倉庫')
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://api.freee.co.jp/iv/quotations')
+      expect(init.method).toBe('POST')
+      expect(JSON.parse(String(init.body)).delivery_location).toBe('東京倉庫')
+      return new Response(JSON.stringify(successfulResponse(saved)))
+    }))
+    expect((await send(saved)).status).toBe('sent')
+    expect(fetch).toHaveBeenCalledTimes(1)
+  })
+  it('rejects forged, stale and master-inconsistent locations without external writes', async () => {
+    await selectLocation()
+    await expect(run(saveSalesQuotePricing, { expectedRevision: 0, settings: { ...settings, ...location, deliveryLocationName: '大阪倉庫' } })).rejects.toMatchObject({ code: 'aborted' })
+    await db.doc(`deliveryLocations/${location.deliveryLocationId}`).update({ name: 'OTHER' })
+    await expect(save()).rejects.toMatchObject({ code: 'failed-precondition' })
+    expect(fetch).not.toHaveBeenCalled()
+  })
+  it('requires resaving after RFQ changes and preserves old revisions and payloads', async () => {
+    await selectLocation()
+    const first = await save()
+    await selectLocation('大阪倉庫')
+    await expect(send(first)).rejects.toThrow('納品場所')
+    expect(fetch).not.toHaveBeenCalled()
+    const next = await save(1)
+    expect(next.payload.delivery_location).toBe('大阪倉庫')
+    expect((await ref().collection('revisions').doc('1').get()).get('payload.delivery_location')).toBe('東京倉庫')
+    expect(first.payload.delivery_location).toBe('東京倉庫')
+  })
+  it('uses the revised location for a guarded same-ID PUT and keeps its old snapshot', async () => {
+    await selectLocation()
+    const first = await save()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(successfulResponse(first)))))
+    await send(first)
+    await run(startSalesQuoteRevision, { expectedRevision: 1, digest: first.digest, customerPresented: false })
+    await selectLocation('大阪倉庫')
+    await db.doc('salesQuotes/rfq').update({ status: 'confirmed' })
+    await db.doc('salesQuotes/rfq/items/item').update({ confirmedAt: Timestamp.now() })
+    const next = await save(1)
+    const methods: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      methods.push(init.method ?? 'GET')
+      if (init.method) expect(JSON.parse(String(init.body)).delivery_location).toBe('大阪倉庫')
+      return new Response(JSON.stringify(successfulResponse(init.method ? next : first)))
+    }))
+    expect((await send(next)).status).toBe('sent')
+    expect(methods).toEqual(['GET', 'PUT'])
+    expect((await ref().collection('revisions').doc('1').get()).get('payload.delivery_location')).toBe('東京倉庫')
+  })
+})
+
 describe('freee numeric token version metadata integration', () => {
   it('uses the current numeric version when saving a quotation without reading latest', async () => {
     const access = vi.mocked(SecretManagerServiceClient.prototype.accessSecretVersion)

@@ -10,6 +10,7 @@ exports.extractVisionText = extractVisionText;
 const params_1 = require("firebase-functions/params");
 const https_1 = require("firebase-functions/v2/https");
 const sharp_1 = __importDefault(require("sharp"));
+const deliveryLocationExtraction_1 = require("./deliveryLocationExtraction");
 const REGION = 'asia-northeast1';
 const visionApiKey = (0, params_1.defineSecret)('GOOGLE_CLOUD_VISION_API_KEY');
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
@@ -251,7 +252,11 @@ async function extractVisionText(input, apiKey, fetcher = fetch) {
     const text = responses.map(response => {
         const annotation = record(response.fullTextAnnotation);
         const layoutText = layoutVisionText(annotation, grid);
-        return layoutText || (typeof annotation.text === 'string' ? annotation.text : '');
+        const rawText = typeof annotation.text === 'string' ? annotation.text : '';
+        // Table reconstruction discards page headers. Retain explicitly labeled
+        // delivery locations so the RFQ import can match them against the master.
+        const locations = layoutText ? (0, deliveryLocationExtraction_1.extractDeliveryLocationCandidates)(rawText).map(name => `納品場所：${name}`) : [];
+        return layoutText ? [...locations, layoutText].join('\n') : rawText;
     }).filter(Boolean).join('\n').trim();
     if (!text)
         throw new https_1.HttpsError('failed-precondition', '文字を抽出できませんでした。画像を鮮明にして再試行してください。');

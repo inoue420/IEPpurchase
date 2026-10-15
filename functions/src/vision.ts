@@ -1,6 +1,7 @@
 import { defineSecret } from 'firebase-functions/params'
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
 import sharp from 'sharp'
+import { extractDeliveryLocationCandidates } from './deliveryLocationExtraction'
 
 const REGION = 'asia-northeast1'
 const visionApiKey = defineSecret('GOOGLE_CLOUD_VISION_API_KEY')
@@ -205,7 +206,11 @@ export async function extractVisionText(input: VisionRequest, apiKey: string, fe
   const text = responses.map(response => {
     const annotation = record(response.fullTextAnnotation)
     const layoutText = layoutVisionText(annotation, grid)
-    return layoutText || (typeof annotation.text === 'string' ? annotation.text : '')
+    const rawText = typeof annotation.text === 'string' ? annotation.text : ''
+    // Table reconstruction discards page headers. Retain explicitly labeled
+    // delivery locations so the RFQ import can match them against the master.
+    const locations = layoutText ? extractDeliveryLocationCandidates(rawText).map(name => `納品場所：${name}`) : []
+    return layoutText ? [...locations, layoutText].join('\n') : rawText
   }).filter(Boolean).join('\n').trim()
   if (!text) throw new HttpsError('failed-precondition', '文字を抽出できませんでした。画像を鮮明にして再試行してください。')
   const values = responses.flatMap(response => confidences(response.fullTextAnnotation)).filter(value => value >= 0 && value <= 1)

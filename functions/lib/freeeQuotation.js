@@ -10,6 +10,7 @@ const salesQuoteModel_1 = require("./salesQuoteModel");
 const freeeQuotationTransport_1 = require("./freeeQuotationTransport");
 const oauthTokenStore_1 = require("./oauthTokenStore");
 const freeeTokenMetadata_1 = require("./freeeTokenMetadata");
+const deliveryLocationModel_1 = require("./deliveryLocationModel");
 const tokensSecretName = 'FREEE_OAUTH_TOKENS';
 // Explicit [] clears the previous deployment's fixed bindings during PATCH.
 const options = { region: 'asia-northeast1', invoker: 'public', secrets: [], timeoutSeconds: 60 };
@@ -50,6 +51,13 @@ function exportRef(rfqId) { return (0, firestore_1.getFirestore)().doc(`salesQuo
 function mutable(status) { return status === 'draft' || status === 'failed'; }
 function eventData(userId, action, revision, values = {}) {
     return { action, revision, userId, createdAt: firestore_1.FieldValue.serverTimestamp(), ...values };
+}
+function rfqLocation(data) {
+    const name = (0, deliveryLocationModel_1.deliveryLocationName)(data.deliveryLocationName ?? '');
+    const locationId = data.deliveryLocationId ?? '';
+    if (typeof locationId !== 'string' || (locationId && !/^[A-Za-z0-9_-]{1,128}$/.test(locationId)) || Boolean(locationId) !== Boolean(name))
+        throw new https_1.HttpsError('failed-precondition', 'RFQの納品場所が不正です。選択し直して保存してください。');
+    return { deliveryLocationId: locationId, deliveryLocationName: name };
 }
 exports.startSalesQuoteRevision = (0, https_1.onCall)(options, async (request) => {
     if (!request.auth)
@@ -148,6 +156,20 @@ exports.saveSalesQuotePricing = (0, https_1.onCall)(options, async (request) => 
             throw new https_1.HttpsError('aborted', '別の利用者が更新しました。保存済みの内容を読み直してください。');
         if (previous && !mutable(previous.status))
             throw new https_1.HttpsError('failed-precondition', '送信開始後の販売見積は変更できません。');
+        const location = rfqLocation(rfq.data());
+        const requested = input(data.settings);
+        if ((requested.deliveryLocationName !== undefined || requested.deliveryLocationId !== undefined)
+            && (settings.deliveryLocationId !== location.deliveryLocationId || settings.deliveryLocationName !== location.deliveryLocationName))
+            throw new https_1.HttpsError('aborted', 'RFQの納品場所が変更されました。最新の場所を確認して保存し直してください。');
+        if (location.deliveryLocationId) {
+            const master = await transaction.get(db.doc(`deliveryLocations/${location.deliveryLocationId}`));
+            if (!master.exists || master.get('name') !== location.deliveryLocationName)
+                throw new https_1.HttpsError('failed-precondition', '納品場所マスタとRFQが一致しません。RFQで選択し直してください。');
+        }
+        // Resolve from the RFQ, including for older clients. Saved revisions remain immutable.
+        settings = { ...settings, ...location };
+        if (previous?.updateTarget?.payload.delivery_location && !location.deliveryLocationName)
+            throw new https_1.HttpsError('failed-precondition', '納品場所のあるfreee見積を上書きする場合は、RFQに納品場所を指定してください。空欄にする場合は改訂を新規作成してください。');
         if (previous?.updateTarget && (previous.updateTarget.payload.company_id !== companyId || previous.customerId !== rfq.get('customerId')))
             throw new https_1.HttpsError('failed-precondition', '更新元の事業所・顧客と一致しません。元の接続と案件を確認してください。');
         if (previous?.updateTarget && Number(settings.partnerId) !== previous.updateTarget.payload.partner_id)
@@ -218,6 +240,9 @@ exports.sendFreeeQuotation = (0, https_1.onCall)(options, async (request) => {
             throw new https_1.HttpsError('failed-precondition', '接続事業所が変わっています。プレビューを保存し直してください。');
         if (!rfq.exists || rfq.get('status') === 'cancelled' || rfq.get('customerId') !== saved.customerId)
             throw new https_1.HttpsError('failed-precondition', 'RFQの状態または顧客が変更されました。');
+        const location = rfqLocation(rfq.data());
+        if (location.deliveryLocationId !== (saved.preview.settings.deliveryLocationId ?? '') || location.deliveryLocationName !== (saved.preview.settings.deliveryLocationName ?? ''))
+            throw new https_1.HttpsError('failed-precondition', 'RFQの納品場所が変更されました。販売見積を保存し直してから転記してください。');
         if (saved.payload.lines.some(line => (0, salesQuoteModel_1.hasUnsupportedFreeeDescription)(line.description)))
             throw new https_1.HttpsError('failed-precondition', '保存済みの摘要に改行・制御文字が含まれています。「販売見積を保存」で新しい版を作成し、内容を確認してください。');
         transaction.update(ref, { status: 'sending', attempt: saved.attempt + 1, startedAt: firestore_1.FieldValue.serverTimestamp(), updatedAt: firestore_1.FieldValue.serverTimestamp(), error: '' });

@@ -8,6 +8,8 @@ import { calculateSalesUnitPrice, freeeDescription, hasUnsupportedFreeeDescripti
 import type { SalesQuoteTranslationItem } from './salesQuoteTranslationRepository'
 import type { RfqItem } from '../rfqs/rfqItemRepository'
 import { FreeePartnerPicker, type SelectedFreeePartner } from './FreeePartnerPicker'
+import { subscribeRfq } from '../rfqs/rfqRepository'
+import type { DeliveryLocationSelection } from '../../../functions/src/deliveryLocationModel'
 
 interface SavedQuote {
   partnerName?: string
@@ -44,6 +46,7 @@ function Preview({ preview, memo }: { preview: QuotePreview; memo?: string }) {
   return <Stack spacing={1}>
     <Typography>件名：{s.subject} ／ 見積日：{s.quotationDate} ／ 有効期限：{s.expirationDate || '指定なし'}</Typography>
     <Typography>freee取引先ID：{s.partnerId} ／ 敬称：{s.partnerTitle} ／ 見積書番号：{s.quotationNumber || 'freeeで自動採番'}</Typography>
+    <Typography>納品場所：{s.deliveryLocationName || '未指定'}</Typography>
     <Typography variant="body2">JPY・{s.taxEntryMethod === 'out' ? '税別' : '税込'}単価 ／ 明細金額：{fractionLabels[s.lineAmountFraction]} ／ 税率ごとの消費税：{fractionLabels[s.taxFraction]}</Typography>
     {preview.warnings.map(warning => <Alert key={warning} severity="warning">{warning} 利用者による確認済みです。</Alert>)}
     <TableContainer><Table size="small"><TableHead><TableRow><TableCell>freee摘要（メーカー名＋品番＋確定出力文）</TableCell><TableCell>数量</TableCell><TableCell>販売単価</TableCell><TableCell>税率</TableCell><TableCell>明細金額</TableCell></TableRow></TableHead><TableBody>
@@ -55,9 +58,10 @@ function Preview({ preview, memo }: { preview: QuotePreview; memo?: string }) {
   </Stack>
 }
 type DisplayItem = SalesQuoteTranslationItem & { manufacturerName: string }
-function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: DisplayItem[]; rfqItems: RfqItem[]; saved: SavedQuote | null }) {
+function Editor({ rfqId, items, rfqItems, saved, deliveryLocation }: { rfqId: string; items: DisplayItem[]; rfqItems: RfqItem[]; saved: SavedQuote | null; deliveryLocation: DeliveryLocationSelection }) {
   const initialSettings = () => saved ? alignSalesQuotePrices(settingsForEditing(saved), defaults(items, rfqItems)) : defaults(items, rfqItems)
   const [settings, setSettings] = useState<QuoteSettings>(initialSettings)
+  const currentSettings = { ...settings, ...deliveryLocation }
   const [baseRevision, setBaseRevision] = useState(saved?.revision ?? 0)
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [confirming, setConfirming] = useState<SavedQuote | null>(null)
   const [quotationId, setQuotationId] = useState('')
@@ -86,12 +90,12 @@ function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: Displ
   const needsDescriptionResave = !!saved?.preview.lines.some(line => hasUnsupportedFreeeDescription(line.description))
   const hasLegacyMemo = !!saved && usesLegacyMemo(saved)
   let localPreview: QuotePreview | null = null, validation = ''
-  try { localPreview = buildQuotePreview(parseQuoteSettings(settings), items) } catch (cause) { validation = cause instanceof Error ? cause.message : '入力を確認してください。' }
+  try { localPreview = buildQuotePreview(parseQuoteSettings(currentSettings), items) } catch (cause) { validation = cause instanceof Error ? cause.message : '入力を確認してください。' }
   const sourceChanged = !!saved && !!localPreview && (localPreview.lines.length !== saved.preview.lines.length || localPreview.lines.some(line => {
     const previous = saved.preview.lines.find(value => value.rfqItemId === line.rfqItemId)
     return !previous || ['lineNo', 'partNumber', 'quantity', 'unit', 'manufacturerName', 'originalDescription', 'translatedDescription', 'outputDescription'].some(key => line[key as keyof typeof line] !== previous[key as keyof typeof previous])
   }))
-  const dirty = !!saved?.editing || needsDescriptionResave || sourceChanged || !saved || !salesQuoteSettingsEqual(settings, saved.preview.settings) || partner?.name !== saved.partnerName || (!!partner && partner.companyId !== saved.companyId)
+  const dirty = !!saved?.editing || needsDescriptionResave || sourceChanged || !saved || !salesQuoteSettingsEqual(currentSettings, saved.preview.settings) || partner?.name !== saved.partnerName || (!!partner && partner.companyId !== saved.companyId)
   // Memo refresh is optional. An older server returning its saved legacy memo
   // must not turn an otherwise saved quote into an endless save/send blocker.
   const canRefreshMemo = hasLegacyMemo && !memoRefreshUnavailable
@@ -101,7 +105,7 @@ function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: Displ
     setBusy(true); setError('')
     try {
       const call = httpsCallable<unknown, SavedQuote>(firebaseFunctions, 'saveSalesQuotePricing')
-      const { data } = await call({ rfqId, settings, expectedRevision: baseRevision, partnerCompanyId: partner.companyId })
+      const { data } = await call({ rfqId, settings: currentSettings, expectedRevision: baseRevision, partnerCompanyId: partner.companyId })
       setSettings(data.preview.settings); setBaseRevision(data.revision)
       setMemoRefreshUnavailable(usesLegacyMemo(data))
       setPartner({ id: Number(data.preview.settings.partnerId), name: data.partnerName ?? partner.name, companyId: data.companyId })
@@ -131,6 +135,7 @@ function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: Displ
     {!locked && <>
       {stale && <Alert severity="warning" action={<Button disabled={busy} onClick={() => { if (saved) { setSettings(settingsForEditing(saved)); setBaseRevision(saved.revision); setPartner(saved.partnerName ? { id: Number(saved.preview.settings.partnerId), name: saved.partnerName, companyId: saved.companyId } : null) } }}>保存済みを読み直す</Button>}>保存版が更新されています。入力内容を確認してから読み直してください。</Alert>}
       <Box component="fieldset" disabled={busy || stale} sx={{ border: 0, p: 0, m: 0 }}><Stack spacing={2}>
+        <TextField label="納品場所（RFQから反映）" value={deliveryLocation.deliveryLocationName} slotProps={{ htmlInput: { readOnly: true } }} helperText="変更する場合はRFQ詳細上部の納品場所を保存してください。この販売見積を保存すると、freeeの納品場所へ反映する値が確定します。" />
         <Stack direction={{ xs: 'column', md: 'row' }} spacing={2}>
           <FreeePartnerPicker value={partner} disabled={busy || stale || (updating && !!partner)} onChange={selected => { setPartner(selected); update('partnerId', String(selected.id)) }} />
           <TextField required label="件名" value={settings.subject} onChange={e => update('subject', e.target.value)} sx={{ flex: 1 }} />
@@ -173,6 +178,7 @@ function Editor({ rfqId, items, rfqItems, saved }: { rfqId: string; items: Displ
 }
 
 export function FreeeQuotationSection({ rfqId, items, rfqItems }: { rfqId: string; items: SalesQuoteTranslationItem[]; rfqItems: RfqItem[] }) {
+  const [deliveryLocation, setDeliveryLocation] = useState<DeliveryLocationSelection | null>(null)
   const [saved, setSaved] = useState<SavedQuote | null>(null), [loaded, setLoaded] = useState(false), [error, setError] = useState('')
   const [events, setEvents] = useState<History[]>([]), [versions, setVersions] = useState<(SavedQuote & { id: string })[]>([]), [version, setVersion] = useState<SavedQuote | null>(null)
   useEffect(() => {
@@ -181,13 +187,14 @@ export function FreeeQuotationSection({ rfqId, items, rfqItems }: { rfqId: strin
     const stop = onSnapshot(ref, snapshot => { setSaved(snapshot.exists() ? snapshot.data() as SavedQuote : null); setLoaded(true) }, fail)
     const stopEvents = onSnapshot(query(collection(ref, 'events'), orderBy('createdAt', 'desc'), limit(20)), snapshot => setEvents(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as History))), fail)
     const stopVersions = onSnapshot(query(collection(ref, 'revisions'), orderBy('revision', 'desc'), limit(20)), snapshot => setVersions(snapshot.docs.map(d => ({ id: d.id, ...d.data() } as SavedQuote & { id: string }))), fail)
-    return () => { stop(); stopEvents(); stopVersions() }
+    const stopRfq = subscribeRfq(rfqId, rfq => { if (!rfq) { fail(); return }; setDeliveryLocation({ deliveryLocationId: rfq.deliveryLocationId ?? '', deliveryLocationName: rfq.deliveryLocationName ?? '' }) }, fail)
+    return () => { stop(); stopEvents(); stopVersions(); stopRfq() }
   }, [rfqId])
   return <Paper sx={{ p: 3, mt: 3 }}><Stack spacing={2}>
     <Typography component="h2" variant="h6">販売見積・freee転記</Typography>
     <Typography variant="body2">確定した品番・数量・出力文を使い、販売単価を設定します。JPY、小数3桁までの数量・単価、100明細まで対応します。</Typography>
     {error && <Alert severity="error">{error}</Alert>}
-    {!loaded ? <Typography>保存状態を読み込み中…</Typography> : !error && <Editor rfqId={rfqId} items={items.map(item => ({ ...item, manufacturerName: rfqItems.find(rfqItem => rfqItem.id === item.id)?.manufacturerName ?? '' }))} rfqItems={rfqItems} saved={saved} />}
+    {!loaded || !deliveryLocation ? <Typography>保存状態を読み込み中…</Typography> : !error && <Editor rfqId={rfqId} items={items.map(item => ({ ...item, manufacturerName: rfqItems.find(rfqItem => rfqItem.id === item.id)?.manufacturerName ?? '' }))} rfqItems={rfqItems} saved={saved} deliveryLocation={deliveryLocation} />}
     {versions.length > 0 && <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap"><Typography>保存履歴（最新20版）：</Typography>{versions.map(v => <Button key={v.id} size="small" onClick={() => setVersion(v)}>版 {v.revision}</Button>)}</Stack>}
     {events.length > 0 && <><Typography variant="subtitle1">操作・結果履歴（最新20件）</Typography>{events.map(event => <Typography key={event.id} variant="body2">{event.createdAt instanceof Timestamp ? event.createdAt.toDate().toLocaleString('ja-JP') : '記録中'} ／ 版 {event.revision} ／ {actionLabels[event.action] ?? event.action}{event.operation ? `（${event.operation === 'update' ? '上書き更新' : '新規作成'}）` : ''} ／ 操作者：{event.userId}{event.result && ` ／ freee見積書ID：${event.result.id} ／ 番号：${event.result.number || '—'}`}{event.previousResult && ` ／ 改訂元freee見積書ID：${event.previousResult.id}`}{event.message ? ` ／ ${event.message}` : ''}</Typography>)}</>}
   </Stack><Dialog open={!!version} fullWidth maxWidth="lg" onClose={() => setVersion(null)}><DialogTitle>保存版 {version?.revision}</DialogTitle><DialogContent>{version && <Preview preview={version.preview} memo={version.payload?.memo ?? version.marker} />}</DialogContent><DialogActions><Button onClick={() => setVersion(null)}>閉じる</Button></DialogActions></Dialog></Paper>

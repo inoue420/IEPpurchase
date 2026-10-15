@@ -9,6 +9,28 @@ const preview = () => buildQuotePreview(settings(), [line])
 const payload = () => toFreeePayload(preview(), 456, 'IEPpurchase:rfq:v1')
 const response = (change: Record<string, unknown> = {}) => ({ quotation: { id: 1, quotation_number: 'Q-1', company_id: 456, partner_id: 123, total_amount: 220, amount_tax: 20, lines: payload().lines, report_url: 'https://invoice.freee.co.jp/reports/1', ...change } })
 
+describe('delivery location in freee quotations', () => {
+  it('snapshots the selected name into POST /iv/quotations and verifies the response', async () => {
+    const selected = settings({ deliveryLocationId: 'location', deliveryLocationName: '東京倉庫' })
+    const data = toFreeePayload(buildQuotePreview(selected, [line]), 456, 'memo')
+    expect(data.delivery_location).toBe('東京倉庫')
+    expect(payload()).not.toHaveProperty('delivery_location')
+    const fetcher: typeof fetch = async (url, init) => {
+      expect(url).toBe('https://api.freee.co.jp/iv/quotations')
+      expect(init?.method).toBe('POST')
+      expect(JSON.parse(String(init?.body)).delivery_location).toBe('東京倉庫')
+      return new Response(JSON.stringify(response({ delivery_location: '東京倉庫' })))
+    }
+    expect((await createFreeeQuotation(data, 'fake', 220, 20, fetcher)).verification).toBe('matched')
+    expect(freeeResult(response({ delivery_location: '大阪倉庫' }), data, 220, 20).verification).toBe('needs_review')
+    expect(freeeResult(response(), data, 220, 20).verification).toBe('needs_review')
+  })
+  it('rejects overlong names, control characters, and unpaired selections', () => {
+    for (const change of [{ deliveryLocationName: '倉'.repeat(256), deliveryLocationId: 'x' }, { deliveryLocationName: '倉\n庫', deliveryLocationId: 'x' }, { deliveryLocationName: '倉庫' }, { deliveryLocationId: 'x' }]) expect(() => settings(change)).toThrow()
+    expect(settings().deliveryLocationName).toBe('')
+  })
+})
+
 describe('freee internal quotation memo', () => {
   it('uses exactly two lines with the RFQ page URL and case number, keeping customer-facing notes separate', () => {
     const memo = freeeQuotationMemo('rfq_a-1', 'RFQ-2026-000001', 1)

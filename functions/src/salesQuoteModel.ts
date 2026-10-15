@@ -1,10 +1,12 @@
 // Pure model shared by the browser preview and the server. Money is JPY.
+import { deliveryLocationName } from './deliveryLocationModel'
 export type Fraction = 'omit' | 'round' | 'round_up'
 export interface QuotePrice {
   rfqItemId: string; purchaseAmount: string; shippingFee: string; margin: string
   unitPrice: string; taxRate: 0 | 8 | 10; reducedTaxRate: boolean
 }
 export interface QuoteSettings {
+  deliveryLocationId?: string; deliveryLocationName?: string
   partnerId: string; quotationDate: string; expirationDate: string; subject: string
   quotationNumber: string; partnerTitle: '御中' | '様' | '(空白)'
   taxEntryMethod: 'in' | 'out'; taxFraction: Fraction; lineAmountFraction: Fraction
@@ -19,6 +21,7 @@ export interface QuotePreview {
   settings: QuoteSettings; lines: PricedLine[]; subtotal: number; tax: number; total: number; warnings: string[]
 }
 export interface FreeeQuotePayload {
+  delivery_location?: string
   company_id: number; partner_id: number; quotation_date: string; expiration_date?: string
   quotation_number?: string; subject: string; partner_title: string
   tax_entry_method: 'in' | 'out'; tax_fraction: Fraction; line_amount_fraction: Fraction
@@ -60,6 +63,9 @@ export function calculateSalesUnitPrice(purchaseAmount: string, shippingFee: str
 }
 export function parseQuoteSettings(value: unknown): QuoteSettings {
   const d = record(value)
+  const locationName = deliveryLocationName(d.deliveryLocationName ?? '')
+  const locationId = text(d.deliveryLocationId ?? '', '納品場所ID', 128, false)
+  if ((locationId && !/^[A-Za-z0-9_-]+$/.test(locationId)) || Boolean(locationId) !== Boolean(locationName)) throw new Error('納品場所の選択が不正です。RFQで保存し直してください。')
   const partnerId = text(d.partnerId, 'freee取引先ID', 16)
   // freee receives this as a numeric ID. Preserve a user-entered leading-zero form
   // in the draft, while accepting it when its numeric value is a positive safe integer.
@@ -83,6 +89,7 @@ export function parseQuoteSettings(value: unknown): QuoteSettings {
   if (new Set(prices.map(p => p.rfqItemId)).size !== prices.length) throw new Error('明細が重複しています。')
   if (typeof d.translationsReviewed !== 'boolean') throw new Error('翻訳確認の指定が不正です。')
   return {
+    deliveryLocationId: locationId, deliveryLocationName: locationName,
     partnerId, quotationDate, expirationDate, prices, translationsReviewed: d.translationsReviewed,
     subject: text(d.subject, '件名', 255), quotationNumber: text(d.quotationNumber, '見積書番号', 255, false),
     partnerTitle: choice(d.partnerTitle, ['御中', '様', '(空白)'] as const, '敬称'),
@@ -151,6 +158,7 @@ export function toFreeePayload(preview: QuotePreview, companyId: number, memo: s
     company_id: companyId, partner_id: Number(s.partnerId), quotation_date: s.quotationDate,
     ...(s.expirationDate ? { expiration_date: s.expirationDate } : {}),
     ...(s.quotationNumber ? { quotation_number: s.quotationNumber } : {}),
+    ...(s.deliveryLocationName ? { delivery_location: s.deliveryLocationName } : {}),
     subject: s.subject, partner_title: s.partnerTitle, tax_entry_method: s.taxEntryMethod,
     tax_fraction: s.taxFraction, line_amount_fraction: s.lineAmountFraction,
     withholding_tax_entry_method: 'out', quotation_note: s.note, memo,

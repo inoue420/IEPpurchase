@@ -4,6 +4,8 @@ import { parseBulkRfqItems, validateBulkRfqItemInput, type BulkRfqItemDraft } fr
 import { readBulkRfqItemFile } from './bulkRfqItemParser'
 import { createRfqItems, type RfqItemInput } from './rfqItemRepository'
 import { rfqError } from './rfqError'
+import { RfqDeliveryLocationBox } from '../deliveryLocations/RfqDeliveryLocationBox'
+import { withoutDeliveryLocationHeader } from '../deliveryLocations/deliveryLocationExtraction'
 
 type EditableKey = 'manufacturerName' | 'partNumber' | 'originalDescription' | 'quantity' | 'unit' | 'note'
 
@@ -19,7 +21,7 @@ export function BulkRfqItemDialog({ rfqId, onClose, onSaved }: { rfqId: string; 
   const targets = rows.filter(row => selected.includes(row.rowNumber) && !row.error)
 
   function preview() {
-    const lineCount = text.replace(/\r/g, '').split('\n').filter(line => line.trim()).length
+    const lineCount = withoutDeliveryLocationHeader(text).replace(/\r/g, '').split('\n').filter(line => line.trim()).length
     if (lineCount > 51) {
       setRows([])
       setSelected([])
@@ -81,6 +83,7 @@ export function BulkRfqItemDialog({ rfqId, onClose, onSaved }: { rfqId: string; 
         <Typography variant="body2" color="text.secondary">ファイルはこのブラウザ内だけで読み取り、外部へアップロード・送信しません。</Typography>
         <TextField label="貼り付ける表" multiline minRows={7} value={text} disabled={busy} onChange={event => setText(event.target.value)} placeholder={'メーカー名\t品番\t詳細\t数量\t単位\t備考\nABC\tA-001\t六角ボルト\t10\t本\t至急'} />
         <Box><Button variant="outlined" disabled={busy || !text.trim()} onClick={preview}>プレビュー</Button></Box>
+        <RfqDeliveryLocationBox rfqId={rfqId} extractedText={text} />
         {rows.length > 0 && <><Alert severity={rows.some(row => row.error) ? 'warning' : 'info'}>内容を修正し、登録する行を選択してください。エラーのある行は選択できません。</Alert><TableContainer><Table size="small" sx={{ minWidth: 1180 }}><TableHead><TableRow><TableCell>登録</TableCell><TableCell>行</TableCell><TableCell>メーカー</TableCell><TableCell>品番</TableCell><TableCell>詳細</TableCell><TableCell>数量</TableCell><TableCell>単位</TableCell><TableCell>備考</TableCell><TableCell>状態</TableCell></TableRow></TableHead><TableBody>{rows.map(row => <TableRow key={row.rowNumber} selected={selected.includes(row.rowNumber)}><TableCell padding="checkbox"><Checkbox checked={selected.includes(row.rowNumber)} disabled={busy || Boolean(row.error)} onChange={event => setSelected(current => event.target.checked ? [...current, row.rowNumber] : current.filter(value => value !== row.rowNumber))} /></TableCell><TableCell>{row.rowNumber}</TableCell>{(['manufacturerName', 'partNumber', 'originalDescription'] as const).map(key => <TableCell key={key}><TextField size="small" value={row.input[key]} disabled={busy} onChange={event => updateRow(row.rowNumber, key, event.target.value)} /></TableCell>)}<TableCell><TextField size="small" type="number" inputProps={{ min: 0, step: 'any' }} value={Number.isFinite(row.input.quantity) ? row.input.quantity : ''} disabled={busy} onChange={event => updateRow(row.rowNumber, 'quantity', event.target.value)} /></TableCell><TableCell><TextField size="small" value={row.input.unit} disabled={busy} onChange={event => updateRow(row.rowNumber, 'unit', event.target.value)} /></TableCell><TableCell><TextField size="small" value={row.input.note} disabled={busy} onChange={event => updateRow(row.rowNumber, 'note', event.target.value)} /></TableCell><TableCell><Typography variant="body2" color={row.error ? 'error' : 'success.main'}>{row.error ?? '登録可能'}</Typography></TableCell></TableRow>)}</TableBody></Table></TableContainer></>}
       </Stack></DialogContent>
       <DialogActions><Button disabled={busy} onClick={onClose}>キャンセル</Button><Button variant="contained" disabled={busy || !targets.length} onClick={() => setConfirming(true)}>{`${targets.length}件の登録内容を確認`}</Button></DialogActions>

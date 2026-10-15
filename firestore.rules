@@ -89,9 +89,42 @@ service cloud.firestore {
         && (request.resource.data.active || (resource.data.active && request.resource.data.archivedAt == request.time) || (!resource.data.active && request.resource.data.archivedAt == resource.data.archivedAt));
       allow delete: if false;
     }
+    match /deliveryLocations/{locationId} {
+      function validLocation() {
+        let d = request.resource.data;
+        return locationId.matches('[a-f0-9]{64}')
+          && d.keys().hasAll(['name', 'normalizedName', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'archivedAt'])
+          && d.keys().hasOnly(['name', 'normalizedName', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'archivedAt'])
+          && d.name is string && d.name.size() > 0 && d.name.size() <= 255 && !d.name.matches('.*[\n\r\t].*')
+          && d.normalizedName is string && d.normalizedName.size() > 0 && d.normalizedName.size() <= 1000
+          && d.active is bool && d.createdAt is timestamp && d.createdBy is string
+          && d.updatedAt == request.time && d.updatedBy == request.auth.uid
+          && ((d.active && d.archivedAt == null) || (!d.active && d.archivedAt is timestamp));
+      }
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && validLocation() && request.resource.data.createdAt == request.time
+        && request.resource.data.createdBy == request.auth.uid && request.resource.data.active;
+      allow update: if isSignedIn() && validLocation() && request.resource.data.name == resource.data.name
+        && request.resource.data.normalizedName == resource.data.normalizedName
+        && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy
+        && (request.resource.data.active || (resource.data.active && request.resource.data.archivedAt == request.time) || (!resource.data.active && request.resource.data.archivedAt == resource.data.archivedAt));
+      allow delete: if false;
+    }
+    function validRfqDeliveryLocation(d) {
+      let id = d.get('deliveryLocationId', '');
+      let name = d.get('deliveryLocationName', '');
+      return id is string && name is string && name.size() <= 255
+        && ((id == '' && name == '') || (id.matches('[a-f0-9]{64}') && name.size() > 0
+          && getAfter(/databases/$(database)/documents/deliveryLocations/$(id)).data.name == name));
+    }
+    function activeRfqDeliveryLocation(d) {
+      let id = d.get('deliveryLocationId', '');
+      return id == '' || getAfter(/databases/$(database)/documents/deliveryLocations/$(id)).data.active == true;
+    }
     function validRfq(data) {
-      return data.keys().hasOnly(['rfqNumber', 'customerId', 'customerName', 'subject', 'receivedAt', 'dueDate', 'requestedDeliveryDate', 'status', 'assignedUserId', 'note', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+      return data.keys().hasOnly(['rfqNumber', 'customerId', 'customerName', 'subject', 'receivedAt', 'dueDate', 'requestedDeliveryDate', 'status', 'assignedUserId', 'note', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'deliveryLocationId', 'deliveryLocationName'])
         && data.keys().hasAll(['rfqNumber', 'customerId', 'customerName', 'subject', 'receivedAt', 'dueDate', 'requestedDeliveryDate', 'status', 'assignedUserId', 'note', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy'])
+        && validRfqDeliveryLocation(data)
         && data.rfqNumber is string && data.rfqNumber.matches('RFQ-[0-9]{4}-[0-9]{6}')
         && data.customerId is string && data.customerId.size() > 0 && data.customerName is string && data.customerName.size() > 0 && data.customerName.size() <= 200
         && data.subject is string && data.subject.size() > 0 && data.subject.size() <= 500 && data.receivedAt is timestamp
@@ -103,8 +136,10 @@ service cloud.firestore {
     match /rfqs/{rfqId} {
       allow get, list: if isSignedIn();
       allow create: if isSignedIn() && validRfq(request.resource.data)
+        && activeRfqDeliveryLocation(request.resource.data)
         && request.resource.data.createdAt == request.time && request.resource.data.createdBy == request.auth.uid;
-      allow update: if isSignedIn() && validRfq(request.resource.data) && request.resource.data.rfqNumber == resource.data.rfqNumber && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy;
+      allow update: if isSignedIn() && validRfq(request.resource.data) && request.resource.data.rfqNumber == resource.data.rfqNumber && request.resource.data.createdAt == resource.data.createdAt && request.resource.data.createdBy == resource.data.createdBy
+        && ((request.resource.data.get('deliveryLocationId', '') == resource.data.get('deliveryLocationId', '') && request.resource.data.get('deliveryLocationName', '') == resource.data.get('deliveryLocationName', '')) || activeRfqDeliveryLocation(request.resource.data));
       allow delete: if false;
     }
 

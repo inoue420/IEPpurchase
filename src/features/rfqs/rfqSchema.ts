@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { deliveryLocationName } from '../../../functions/src/deliveryLocationModel'
 
 export const RFQ_STATUSES = ['received', 'sourcing', 'quoting', 'quoted', 'ordered', 'purchasing', 'received_goods', 'delivered', 'completed', 'cancelled'] as const
 export type RfqStatus = typeof RFQ_STATUSES[number]
@@ -17,6 +18,9 @@ export const rfqSchema = z.object({
   status: z.enum(RFQ_STATUSES),
   assignedUserId: z.string().trim().max(128, '担当者IDは128文字以内で入力してください。'),
   note: z.string().trim().max(5000, '備考は5000文字以内で入力してください。'),
+  deliveryLocationName: z.string().optional().transform(value => value ?? '').superRefine((value, context) => {
+    try { deliveryLocationName(value) } catch (cause) { context.addIssue({ code: 'custom', message: (cause as Error).message }) }
+  }),
 }).superRefine((input, context) => {
   if (input.dueDate && input.dueDate < input.receivedAt) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['dueDate'], message: '見積期限は見積依頼受信日以降を入力してください。' })

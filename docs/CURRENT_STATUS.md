@@ -1,3 +1,15 @@
+## 納品場所マスタ・RFQ選択・freee転記（2026-10-15・ユーザー確認待ち／本番反映済み）
+- ユーザー指示により、Phase 3のRFQ・販売見積へ納品場所を追加。RFQ詳細にプルダウン兼手入力欄と独立した保存操作を設け、RFQ登録・編集でも入力可能。手入力の新規場所はマスタとRFQに同一トランザクションで保存し、正規化名のハッシュIDで同時登録の重複を防ぐ。
+- 納品場所マスタ画面で一覧・検索・登録・無効化・再有効化に対応。場所の名称・作成情報と過去RFQ・見積Snapshotは保持し、物理削除は禁止。既存RFQのフィールド未設定を許容し、一括移行は不要。
+- 既存の表貼付／CSV・Excel、PDF、画像・PDF OCR取込で明示された納品場所を抽出。既存マスタ一意一致は自動選択、未登録は新規候補、複数は利用者選択とし、「納品場所を保存」で確定する。品目取込とは独立した保存。OCR表復元で表外ヘッダーが欠落する経路も補修し、場所を品目へ誤取込しない。
+- 販売見積の保存版・プレビュー・履歴へ納品場所IDと名称を保持し、新規freee連携は既存のPOST /iv/quotationsのdelivery_locationへ設定。既存の改訂時GET照合＋PUTも選択場所を反映する。RFQ／マスタのサーバー再照合・RFQ変更後の再保存必須・応答の場所一致確認を追加し、重複転記防止・過去版保持・結果不明ロックを維持する。
+- 自動確認: typecheck・lint・production build・Functions build成功。単体223件、Functions41件、Firestore Emulator結合・権限170件成功。架空データ・通信モックの実コンポーネントで選択／手入力／候補照合／無効化／見積保存／転記確認・モックPOSTを確認。sandboxの一時ファイルrename制約は許可済み再実行で解消。既存lint警告1件とbuild警告は継続。
+- 2026-10-15、ユーザーのFirebase CLI再認証後の「すすめてください」を受け、Hosting、Firestore Rules、saveSalesQuotePricing・sendFreeeQuotation・reconcileFreeeQuotation・extractVisionOcrTextを本番反映済み。結果照合にも場所の一致確認を適用するため、既存の照合関数を追加対象とした。初回sandboxのnpmレジストリDNSエラーは許可済み再試行で解消。実OCR・実freee登録・帳票確認・Gitコミットは未実施。仕様・手順はdocs/DELIVERY_LOCATIONS.md。
+- 本番読み取り確認（2026-10-15 15:51 JST）: 対象4関数ACTIVE・各新revisionへ100%配信・未認証401。反映前後のメモリ256MiB・1CPU・最小0台・最大台数・同時処理数・実行時間・実行アカウント・Ingress・Secret参照が一致。関数総数14件のまま、対象外10関数の更新日時に変更なし。公開ページHTTP200、配信中/assets/index-ByVLSrOj.jsのSHA-256と検証済みローカルビルド一致、Firestore公開Rulesも一致。公開先: https://ieppurchase.web.app 。値を含まない確認記録: tmp/delivery-location-preview/verified-functions-before.json・verified-functions-after.json・verified-comparison.json・verified-hosting-rules-after.json。
+- 認証済みブラウザで本番の納品場所マスタ（未登録の空表示）、既存RFQ一覧の進捗表示、既存RFQ詳細の納品場所入力欄・品目を読み取り確認した。本番業務データの作成・更新や実freee送信はしていない。確認画像: tmp/delivery-location-preview/production-rfq.png。ユーザーによる保存・取込・実帳票確認は未確認。
+- 既存機能・費用を追加監査。変更38ファイル中、生成JS6件・テスト5件・資料2件を含む。既存データの一括移行・削除、新しい課金API・AI判断・定期処理・自動OCR・自動freee送信は追加なし。納品場所は既存のOCR抽出文を再利用する文字列処理で、外部API呼出回数は増やしていない。増分はFirestoreの候補読取・保存時照合・場所文字列の保存等。想定規模では大幅な費用増を招く構造ではないとの設計上の判断であり、実費はプロジェクト全体の利用量・無料枠等による。新しいSecret・Index・認証権限は不要。
+- 管理シート「開発管理」A47:T47へIEP-P3-010を追加し、ユーザー確認待ち／Codex確認OK／ユーザー未確認へ更新済み。再取得で全20セルと既存書式・入力規則の保持を照合し、Google Sheetsの表示も確認。ユーザーOK後に完了記録し、次の機能はユーザー指示に従う。
+
 ## devで販売見積を再保存してもfreee登録ボタンが無効になる不具合（2026-10-14・完了／ユーザー転記確認OK）
 - ユーザー画像とコードを確認。devもEmulator明示指定がなければ本番Functionsへ接続する。新画面だけが先に起動され、未反映のsaveSalesQuotePricingが旧識別メモを返すため、前回追加した旧メモの未保存判定が常にtrueとなり、版だけが増えて転記確認に進めなくなっていた。
 - 社内メモの形式を見積内容のdirty判定から外した。旧形式でも内容・取引先・明細が保存済みなら転記確認を許可し、確認画面に実際の旧メモを表示する。メモ更新だけの再保存は任意とし、保存応答が旧形式なら以後の同一内容再保存を無効にして未反映の案内を表示する。実際の入力変更・編集中・未保存・競合・送信中／結果不明の制限は維持する。

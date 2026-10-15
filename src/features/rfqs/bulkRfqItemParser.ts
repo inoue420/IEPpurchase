@@ -1,6 +1,7 @@
 import type { RfqItemInput } from './rfqItemRepository'
 import { rfqItemSchema } from './rfqItemSchema'
 import * as XLSX from 'xlsx'
+import { withoutDeliveryLocationHeader } from '../deliveryLocations/deliveryLocationExtraction'
 
 export interface BulkRfqItemDraft { rowNumber: number; input: RfqItemInput; error: string | null }
 
@@ -35,7 +36,7 @@ export function validateBulkRfqItemInput(input: RfqItemInput): string | null {
 }
 
 export function parseBulkRfqItems(text: string): BulkRfqItemDraft[] {
-  const lines = text.replace(/\r/g, '').split('\n').map(line => line.trim()).filter(Boolean)
+  const lines = withoutDeliveryLocationHeader(text).replace(/\r/g, '').split('\n').map(line => line.trim()).filter(Boolean)
   if (lines.length < 2) return []
   const delimiter = lines[0].includes('\t') ? '\t' : lines[0].includes('|') ? '|' : lines[0].includes(',') ? ',' : '、'
   const headers = splitRow(lines[0], delimiter).map(value => aliases[normalized(value)])

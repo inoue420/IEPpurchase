@@ -7,6 +7,7 @@ import { hasUnsupportedFreeeDescription, buildQuotePreview, freeeQuotationMemo, 
 import { createFreeeQuotation, updateFreeeQuotation, FreeeRequestError, freeeResult, type FreeeResult, type FreeeUpdateTarget } from './freeeQuotationTransport'
 import { readOAuthTokenPayload } from './oauthTokenStore'
 import { freeeTokenMetadata } from './freeeTokenMetadata'
+import { deliveryLocationName, type DeliveryLocationSelection } from './deliveryLocationModel'
 
 const tokensSecretName = 'FREEE_OAUTH_TOKENS'
 // Explicit [] clears the previous deployment's fixed bindings during PATCH.
@@ -46,6 +47,12 @@ function exportRef(rfqId: string) { return getFirestore().doc(`salesQuotes/${rfq
 function mutable(status: ExportRecord['status']) { return status === 'draft' || status === 'failed' }
 function eventData(userId: string, action: string, revision: number, values: Record<string, unknown> = {}) {
   return { action, revision, userId, createdAt: FieldValue.serverTimestamp(), ...values }
+}
+function rfqLocation(data: Record<string, unknown>): DeliveryLocationSelection {
+  const name = deliveryLocationName(data.deliveryLocationName ?? '')
+  const locationId = data.deliveryLocationId ?? ''
+  if (typeof locationId !== 'string' || (locationId && !/^[A-Za-z0-9_-]{1,128}$/.test(locationId)) || Boolean(locationId) !== Boolean(name)) throw new HttpsError('failed-precondition', 'RFQの納品場所が不正です。選択し直して保存してください。')
+  return { deliveryLocationId: locationId, deliveryLocationName: name }
 }
 
 export const startSalesQuoteRevision = onCall(options, async request => {
@@ -103,7 +110,7 @@ export const saveSalesQuotePricing = onCall(options, async request => {
   if (!request.auth) throw new HttpsError('unauthenticated', 'ログインが必要です。')
   const data = input(request.data), rfqId = id(data.rfqId), expectedRevision = data.expectedRevision
   if (!Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 0) throw new HttpsError('invalid-argument', '保存版番号が不正です。')
-  let settings
+  let settings: ReturnType<typeof parseQuoteSettings>
   try { settings = parseQuoteSettings(data.settings) } catch (error) { throw new HttpsError('invalid-argument', (error as Error).message) }
   const { companyId, accessToken } = await connection(data.partnerCompanyId !== undefined)
   let partnerName: string | undefined
@@ -125,6 +132,17 @@ export const saveSalesQuotePricing = onCall(options, async request => {
     const previous = current.data() as ExportRecord | undefined
     if ((previous?.revision ?? 0) !== expectedRevision) throw new HttpsError('aborted', '別の利用者が更新しました。保存済みの内容を読み直してください。')
     if (previous && !mutable(previous.status)) throw new HttpsError('failed-precondition', '送信開始後の販売見積は変更できません。')
+    const location = rfqLocation(rfq.data()!)
+    const requested = input(data.settings)
+    if ((requested.deliveryLocationName !== undefined || requested.deliveryLocationId !== undefined)
+      && (settings.deliveryLocationId !== location.deliveryLocationId || settings.deliveryLocationName !== location.deliveryLocationName)) throw new HttpsError('aborted', 'RFQの納品場所が変更されました。最新の場所を確認して保存し直してください。')
+    if (location.deliveryLocationId) {
+      const master = await transaction.get(db.doc(`deliveryLocations/${location.deliveryLocationId}`))
+      if (!master.exists || master.get('name') !== location.deliveryLocationName) throw new HttpsError('failed-precondition', '納品場所マスタとRFQが一致しません。RFQで選択し直してください。')
+    }
+    // Resolve from the RFQ, including for older clients. Saved revisions remain immutable.
+    settings = { ...settings, ...location }
+    if (previous?.updateTarget?.payload.delivery_location && !location.deliveryLocationName) throw new HttpsError('failed-precondition', '納品場所のあるfreee見積を上書きする場合は、RFQに納品場所を指定してください。空欄にする場合は改訂を新規作成してください。')
     if (previous?.updateTarget && (previous.updateTarget.payload.company_id !== companyId || previous.customerId !== rfq.get('customerId'))) throw new HttpsError('failed-precondition', '更新元の事業所・顧客と一致しません。元の接続と案件を確認してください。')
     if (previous?.updateTarget && Number(settings.partnerId) !== previous.updateTarget.payload.partner_id) throw new HttpsError('failed-precondition', '上書き更新では前回と同じfreee取引先を選択してください。')
     if (previous?.updateTarget && settings.quotationNumber !== previous.updateTarget.payload.quotation_number && !(settings.quotationNumber === '' && !previous.updateTarget.payload.quotation_number)) throw new HttpsError('failed-precondition', '上書き更新では見積書番号を変更できません。')
@@ -172,6 +190,8 @@ export const sendFreeeQuotation = onCall(options, async request => {
     if (saved.operation === 'update' && !saved.updateTarget) throw new HttpsError('failed-precondition', '更新対象のfreee見積書IDを確認できません。新規作成は行いません。')
     if (token.companyId !== saved.companyId) throw new HttpsError('failed-precondition', '接続事業所が変わっています。プレビューを保存し直してください。')
     if (!rfq.exists || rfq.get('status') === 'cancelled' || rfq.get('customerId') !== saved.customerId) throw new HttpsError('failed-precondition', 'RFQの状態または顧客が変更されました。')
+    const location = rfqLocation(rfq.data()!)
+    if (location.deliveryLocationId !== (saved.preview.settings.deliveryLocationId ?? '') || location.deliveryLocationName !== (saved.preview.settings.deliveryLocationName ?? '')) throw new HttpsError('failed-precondition', 'RFQの納品場所が変更されました。販売見積を保存し直してから転記してください。')
     if (saved.payload.lines.some(line => hasUnsupportedFreeeDescription(line.description))) throw new HttpsError('failed-precondition', '保存済みの摘要に改行・制御文字が含まれています。「販売見積を保存」で新しい版を作成し、内容を確認してください。')
     transaction.update(ref, { status: 'sending', attempt: saved.attempt + 1, startedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp(), error: '' })
     transaction.create(ref.collection('events').doc(), eventData(userId, 'sending', saved.revision, { attempt: saved.attempt + 1, digest: saved.digest, operation: saved.operation ?? 'create' }))

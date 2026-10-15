@@ -13,7 +13,8 @@ export interface FreeeUpdateTarget {
 export class FreeeRequestError extends Error {
   constructor(public readonly retryable: boolean, message: string) { super(message) }
 }
-// These fields are managed by freee/the original template, not by our editor.
+// Preserve fields from the original template. A newly selected delivery location
+// overrides the old value through the saved payload. Keep digest field order for legacy records.
 const preservedFields = ['template_id', 'branch_no', 'delivery_deadline', 'delivery_location',
   'partner_address_zipcode', 'partner_address_prefecture_code', 'partner_address_street_name1', 'partner_address_street_name2',
   'partner_contact_department', 'partner_contact_email_cc', 'partner_contact_email_to', 'partner_contact_name',
@@ -70,6 +71,7 @@ export function freeeResult(value: unknown, payload: FreeeQuotePayload, expected
   }
   const lines = Array.isArray(q.lines) ? q.lines : []
   const matched = q.partner_id === payload.partner_id && q.total_amount === expectedTotal && q.amount_tax === expectedTax
+    && (payload.delivery_location === undefined || q.delivery_location === payload.delivery_location)
     && lines.length === payload.lines.length && lines.every((value, i) => {
       const line = record(value), expected = payload.lines[i]
       return line.description === expected.description && line.quantity === expected.quantity && line.unit === expected.unit

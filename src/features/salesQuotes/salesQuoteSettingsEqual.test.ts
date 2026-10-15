@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { alignSalesQuotePrices, salesQuoteSettingsEqual } from './salesQuoteSettingsEqual'
+import { alignSalesQuotePrices, salesQuoteSettingsEqual, syncSalesQuotePurchaseAmounts } from './salesQuoteSettingsEqual'
 import type { QuoteSettings } from '../../../functions/src/salesQuoteModel'
 const settings: QuoteSettings = { partnerId: '110368088', quotationDate: '2026-09-14', expirationDate: '2026-10-14', subject: 'APIテスト', quotationNumber: '', partnerTitle: '御中', taxEntryMethod: 'out', taxFraction: 'omit', lineAmountFraction: 'omit', note: '', translationsReviewed: true, prices: [{ rfqItemId: 'a', purchaseAmount: '', shippingFee: '', margin: '1.2', unitPrice: '10000', taxRate: 10, reducedTaxRate: false }, { rfqItemId: 'b', purchaseAmount: '', shippingFee: '', margin: '1.2', unitPrice: '80', taxRate: 8, reducedTaxRate: false }] }
 describe('sales quote saved change detection', () => {
@@ -29,5 +29,20 @@ describe('sales quote saved change detection', () => {
     expect(settings.prices.map(price => price.rfqItemId)).toEqual(['a', 'b'])
     expect(aligned.subject).toBe(settings.subject)
     expect(salesQuoteSettingsEqual(aligned, settings)).toBe(false)
+  })
+  it('preserves saved purchase and sales amounts when an EC candidate is not selected on reload', () => {
+    const saved = { ...settings, prices: [{ ...settings.prices[0], purchaseAmount: '10000', unitPrice: '12500' }, settings.prices[1]] }
+    const snapshot = JSON.stringify(saved)
+    const reloaded = syncSalesQuotePurchaseAmounts(saved, new Map([['a', ''], ['b', '']]))
+    expect(reloaded.prices[0]).toMatchObject({ purchaseAmount: '10000', unitPrice: '12500' })
+    expect(reloaded.prices[1].unitPrice).toBe('80')
+    expect(salesQuoteSettingsEqual(reloaded, saved)).toBe(true)
+    expect(JSON.stringify(saved)).toBe(snapshot)
+  })
+  it('still reflects an explicitly selected EC cost and recalculates its sales price', () => {
+    const changed = syncSalesQuotePurchaseAmounts(settings, new Map([['a', '8000']]))
+    expect(changed.prices[0]).toMatchObject({ purchaseAmount: '8000', unitPrice: '10000' })
+    expect(changed.prices[1]).toEqual(settings.prices[1])
+    expect(salesQuoteSettingsEqual(changed, settings)).toBe(false)
   })
 })

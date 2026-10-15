@@ -101,7 +101,8 @@ function freeeResult(value, payload, expectedTotal, expectedTax) {
     });
     return { id: Number(q.id), number: typeof q.quotation_number === 'string' ? q.quotation_number : '', reportUrl,
         total: typeof q.total_amount === 'number' ? q.total_amount : null, tax: typeof q.amount_tax === 'number' ? q.amount_tax : null,
-        verification: matched ? 'matched' : 'needs_review', contentDigest: contentDigest(q) };
+        verification: matched ? 'matched' : 'needs_review', contentDigest: contentDigest(q),
+        ...(typeof q.delivery_location === 'string' ? { deliveryLocation: q.delivery_location } : {}) };
 }
 async function createFreeeQuotation(payload, token, total, tax, fetcher = fetch) {
     return writeFreeeQuotation(payload, token, total, tax, undefined, fetcher);
@@ -111,10 +112,22 @@ async function updateFreeeQuotation(target, payload, token, total, tax, fetcher 
     let q;
     try {
         q = (0, salesQuoteModel_1.record)((0, salesQuoteModel_1.record)(body).quotation);
-        const previous = freeeResult(body, target.payload, target.total, target.tax);
-        const sameHeader = managedFields.every(key => (q[key] ?? '') === (target.payload[key] ?? ''));
-        if (previous.id !== target.id || previous.number !== target.number || previous.verification !== 'matched' || !sameHeader
-            || (target.contentDigest && previous.contentDigest !== target.contentDigest))
+        const baselines = [q];
+        if (payload.delivery_location !== undefined && target.contentDigest) {
+            // The confirmed RFQ location explicitly replaces this one field. Rebuild
+            // its previous value to verify the original digest, keeping every other
+            // field protected. Older exports without a location only allow empty values.
+            const original = target.deliveryLocation ?? target.payload.delivery_location;
+            for (const location of original === undefined ? ['', null] : [original])
+                baselines.push({ ...q, delivery_location: location });
+        }
+        const unchanged = baselines.some(baseline => {
+            const previous = freeeResult({ quotation: baseline }, target.payload, target.total, target.tax);
+            const sameHeader = managedFields.every(key => (baseline[key] ?? '') === (target.payload[key] ?? ''));
+            return previous.id === target.id && previous.number === target.number && previous.verification === 'matched' && sameHeader
+                && (!target.contentDigest || previous.contentDigest === target.contentDigest);
+        });
+        if (!unchanged)
             throw new Error('changed');
     }
     catch {

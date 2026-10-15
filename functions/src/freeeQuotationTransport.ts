@@ -5,10 +5,12 @@ export interface FreeeResult {
   id: number; number: string; reportUrl: string; total: number | null; tax: number | null
   verification: 'matched' | 'needs_review'
   contentDigest?: string
+  deliveryLocation?: string
 }
 export interface FreeeUpdateTarget {
   id: number; number: string; payload: FreeeQuotePayload; total: number; tax: number
   contentDigest?: string
+  deliveryLocation?: string
 }
 export class FreeeRequestError extends Error {
   constructor(public readonly retryable: boolean, message: string) { super(message) }
@@ -80,7 +82,8 @@ export function freeeResult(value: unknown, payload: FreeeQuotePayload, expected
     })
   return { id: Number(q.id), number: typeof q.quotation_number === 'string' ? q.quotation_number : '', reportUrl,
     total: typeof q.total_amount === 'number' ? q.total_amount : null, tax: typeof q.amount_tax === 'number' ? q.amount_tax : null,
-    verification: matched ? 'matched' : 'needs_review', contentDigest: contentDigest(q) }
+    verification: matched ? 'matched' : 'needs_review', contentDigest: contentDigest(q),
+    ...(typeof q.delivery_location === 'string' ? { deliveryLocation: q.delivery_location } : {}) }
 }
 export async function createFreeeQuotation(payload: FreeeQuotePayload, token: string, total: number, tax: number, fetcher: typeof fetch = fetch): Promise<FreeeResult> {
   return writeFreeeQuotation(payload, token, total, tax, undefined, fetcher)
@@ -90,10 +93,21 @@ export async function updateFreeeQuotation(target: FreeeUpdateTarget, payload: F
   let q: Record<string, unknown>
   try {
     q = record(record(body).quotation)
-    const previous = freeeResult(body, target.payload, target.total, target.tax)
-    const sameHeader = managedFields.every(key => (q[key] ?? '') === (target.payload[key] ?? ''))
-    if (previous.id !== target.id || previous.number !== target.number || previous.verification !== 'matched' || !sameHeader
-      || (target.contentDigest && previous.contentDigest !== target.contentDigest)) throw new Error('changed')
+    const baselines = [q]
+    if (payload.delivery_location !== undefined && target.contentDigest) {
+      // The confirmed RFQ location explicitly replaces this one field. Rebuild
+      // its previous value to verify the original digest, keeping every other
+      // field protected. Older exports without a location only allow empty values.
+      const original = target.deliveryLocation ?? target.payload.delivery_location
+      for (const location of original === undefined ? ['', null] : [original]) baselines.push({ ...q, delivery_location: location })
+    }
+    const unchanged = baselines.some(baseline => {
+      const previous = freeeResult({ quotation: baseline }, target.payload, target.total, target.tax)
+      const sameHeader = managedFields.every(key => (baseline[key] ?? '') === (target.payload[key] ?? ''))
+      return previous.id === target.id && previous.number === target.number && previous.verification === 'matched' && sameHeader
+        && (!target.contentDigest || previous.contentDigest === target.contentDigest)
+    })
+    if (!unchanged) throw new Error('changed')
   } catch { throw new FreeeRequestError(true, 'freee側の見積内容が前回の転記内容と異なります。手修正した内容を保護するため、上書き更新を停止しました。') }
   if (q.cancel_status !== 'uncanceled' || q.sending_status !== 'unsent') throw new FreeeRequestError(true, 'freeeで送付済み・取消済み、または送付状態を確認できないため上書きできません。顧客へ提示済みの場合は、改訂見積を新規作成してください。')
   const preserved: Record<string, string | number> = {}

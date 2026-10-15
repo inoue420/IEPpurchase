@@ -1,4 +1,4 @@
-import { alignSalesQuotePrices, recalculateSalesQuoteSettings, salesQuoteSettingsEqual } from './salesQuoteSettingsEqual'
+import { alignSalesQuotePrices, recalculateSalesQuoteSettings, salesQuoteSettingsEqual, syncSalesQuotePurchaseAmounts } from './salesQuoteSettingsEqual'
 import { useEffect, useState } from 'react'
 import { Alert, Box, Button, Checkbox, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, Link, MenuItem, Paper, Stack, Table, TableBody, TableCell, TableContainer, TableHead, TableRow, TextField, Typography } from '@mui/material'
 import { Timestamp, collection, doc, limit, onSnapshot, orderBy, query } from 'firebase/firestore'
@@ -23,7 +23,7 @@ interface SavedQuote {
 interface History { id: string; action: string; revision: number; userId: string; createdAt: Timestamp | null; message: string; operation?: 'create' | 'update'; result?: SavedQuote['result']; previousResult?: SavedQuote['result'] }
 const yen = (value: number) => `${value.toLocaleString('ja-JP')} 円`
 const fractionLabels = { omit: '切り捨て', round: '四捨五入', round_up: '切り上げ' }
-const statusLabels = { draft: '下書き', sending: '転記中・結果確認待ち', failed: '転記拒否（再試行可能）', uncertain: '結果不明（再転記停止）', sent: '転記済み' }
+const statusLabels = { draft: '下書き', sending: '転記中・結果確認待ち', failed: '反映未完了（再試行可能）', uncertain: '結果不明（再転記停止）', sent: '転記済み' }
 const actionLabels: Record<string, string> = { saved: '販売見積保存', revision_started: '改訂の編集開始', sending: '転記開始', failed: '転記拒否', uncertain: '結果不明', sent: '転記成功', reconciled: '転記結果を照合' }
 function usesLegacyMemo(saved: SavedQuote): boolean {
   return (saved.payload?.memo ?? saved.marker) === saved.marker
@@ -77,12 +77,7 @@ function Editor({ rfqId, items, rfqItems, saved, deliveryLocation }: { rfqId: st
   }, [baseRevision, saved, items, rfqItems])
   const purchaseSignature = items.map(item => `${item.id}:${purchaseAmount(rfqItems.find(rfqItem => rfqItem.id === item.id))}`).join('|')
   useEffect(() => {
-    setSettings(previous => ({ ...previous, prices: previous.prices.map(price => {
-      const purchase = purchaseAmount(rfqItems.find(item => item.id === price.rfqItemId))
-      if (price.purchaseAmount === purchase) return price
-      const shippingFee = price.shippingFee ?? '', margin = price.margin ?? '1.2'
-      return { ...price, purchaseAmount: purchase, shippingFee, margin, unitPrice: calculateSalesUnitPrice(purchase, shippingFee, margin) }
-    }) }))
+    setSettings(previous => syncSalesQuotePurchaseAmounts(previous, new Map(rfqItems.map(item => [item.id, purchaseAmount(item)]))))
   }, [purchaseSignature, rfqItems])
   const locked = !!saved && !['draft', 'failed'].includes(saved.status)
   const updating = saved?.operation === 'update'
@@ -130,7 +125,6 @@ function Editor({ rfqId, items, rfqItems, saved, deliveryLocation }: { rfqId: st
   return <Stack spacing={2}>
     {error && <Alert severity="error">{error}</Alert>}
     {saved && <Alert severity={saved.status === 'sent' ? 'success' : saved.status === 'draft' ? 'info' : 'warning'}>保存版 {saved.revision}：{statusLabels[saved.status]} ／ 接続事業所ID：{saved.companyId} ／ 顧客：{saved.customerName}</Alert>}
-    {saved?.error && <Alert severity="warning">{saved.error}</Alert>}
     {saved && !locked && <Alert severity="info">{updating ? `次回は同じfreee見積書（ID：${saved.updateTarget?.id} ／ 番号：${saved.updateTarget?.number || '—'}）を上書き更新します。見積書は増えません。` : saved.previousResult ? '次回は改訂見積を新規作成します。旧見積は保持し、見積書が1件増えます。' : '次回はfreeeに見積書を新規作成します。'}</Alert>}
     {!locked && <>
       {stale && <Alert severity="warning" action={<Button disabled={busy} onClick={() => { if (saved) { setSettings(settingsForEditing(saved)); setBaseRevision(saved.revision); setPartner(saved.partnerName ? { id: Number(saved.preview.settings.partnerId), name: saved.partnerName, companyId: saved.companyId } : null) } }}>保存済みを読み直す</Button>}>保存版が更新されています。入力内容を確認してから読み直してください。</Alert>}
@@ -169,11 +163,14 @@ function Editor({ rfqId, items, rfqItems, saved, deliveryLocation }: { rfqId: st
       <Typography component="h3" variant="subtitle1">保存済みの送信内容（版 {saved.revision}）</Typography><Preview preview={saved.preview} memo={saved.payload?.memo ?? saved.marker} />
       {!locked && !busy && !stale && (!partner || dirty) && <Alert severity="info">{needsDescriptionResave ? '摘要の改行をスペースに変換します。入力中のプレビューを確認し、「販売見積を保存」で新しい版を作成してください。' : !partner ? 'freee取引先を選択して、販売見積を保存してください。' : '未保存の変更があります。「販売見積を保存」してから登録内容を確認してください。'}</Alert>}
       {!locked && hasLegacyMemo && <Alert severity={memoRefreshUnavailable ? 'warning' : 'info'}>{memoRefreshUnavailable ? '見積は保存済みです。案件リンク・案件番号への変更は接続先にまだ反映されていません。転記確認画面には、今回送る旧形式の社内メモを表示します。' : '社内メモは旧形式です。「販売見積を保存」で案件リンク・案件番号への更新を試せます。見積内容が保存済みなら、表示中の社内メモで転記確認へ進めます。'}</Alert>}
-      {!locked && <Button variant="contained" disabled={busy || dirty || stale || !partner} onClick={() => setConfirming(saved)}>{updating ? 'freeeへの上書き内容を確認' : 'freeeへの登録内容を確認'}</Button>}
+      {saved.status === 'draft' && <Alert severity="info">この版はIEPpurchase内に保存済みです。freeeへの反映は、確認画面で実行した後に完了します。</Alert>}
+      {saved.error && <Alert severity="warning">保存版 {saved.revision} はfreeeへの反映が完了していません。{saved.error}</Alert>}
+      {!locked && <Button variant="contained" disabled={busy || dirty || stale || !partner} onClick={() => setConfirming(saved)}>{saved.status === 'failed' ? 'freeeへの再試行内容を確認' : updating ? 'freeeへの上書き内容を確認' : 'freeeへの登録内容を確認'}</Button>}
       {saved.result && <Alert severity={saved.result.verification === 'matched' ? 'success' : 'warning'}>freee見積書ID：{saved.result.id} ／ 番号：{saved.result.number || '—'} ／ freee合計：{saved.result.total === null ? '未取得' : yen(saved.result.total)}<br />{saved.result.verification === 'matched' ? '明細・金額は送信内容と一致しました。' : 'freeeの応答と送信内容に差異または未取得項目があります。帳票を確認してください。再作成は行いません。'}{saved.result.reportUrl && <><br /><Link href={saved.result.reportUrl} target="_blank" rel="noopener noreferrer">freee見積書を開く</Link></>}</Alert>}
+      {saved.previousResult && saved.previousResult.id !== saved.result?.id && <Alert severity="info">前回反映済みのfreee見積書：{saved.previousResult.number || `ID ${saved.previousResult.id}`}。{updating ? '同じ見積書の現在の内容を確認できます。' : '改訂前の見積書です。'}{saved.previousResult.reportUrl && <><br /><Link href={saved.previousResult.reportUrl} target="_blank" rel="noopener noreferrer">前回のfreee見積書を開く</Link></>}</Alert>}
       {['sending', 'uncertain'].includes(saved.status) && <Stack spacing={1}><Alert severity="warning" sx={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>2分以上経過しても結果が確定しない場合、freeeで見積書を確認してください。上の送信内容と社内メモ全体が一致する見積書のIDで照合します。見つからない場合は管理者による調査が必要です。</Alert><TextField label="作成済みfreee見積書ID" value={quotationId} onChange={e => setQuotationId(e.target.value)} /><Button disabled={busy || !/^[1-9]\d*$/.test(quotationId)} onClick={() => void reconcile()}>freeeの作成結果を照合</Button></Stack>}
     </>}
-    <Dialog open={!!confirming} fullWidth maxWidth="lg" onClose={busy ? undefined : () => setConfirming(null)}><DialogTitle>{updating ? '同じfreee見積書を上書き更新します' : 'freee見積書を新規作成します'}</DialogTitle><DialogContent>{confirming && <Stack spacing={2}><Alert severity="warning">接続事業所ID {confirming.companyId} のfreeeに{updating ? `上書き更新します（見積書ID：${confirming.updateTarget?.id}）。見積書は増えません。` : '新規登録します。'}顧客「{confirming.customerName}」とfreee取引先「{confirming.partnerName}」（ID {confirming.preview.settings.partnerId}） の対応を確認してください。</Alert><Preview preview={confirming.preview} memo={confirming.payload?.memo ?? confirming.marker} /><Typography>保存版 {confirming.revision} を転記します。顧客へのメール送付は行いません。</Typography></Stack>}</DialogContent><DialogActions><Button disabled={busy} onClick={() => setConfirming(null)}>キャンセル</Button><Button variant="contained" disabled={busy || confirming?.digest !== saved?.digest || dirty || locked} onClick={() => void send()}>{busy ? '転記中…' : updating ? '確認した内容でfreeeを上書き更新' : '確認した内容でfreeeに新規登録'}</Button></DialogActions></Dialog>
+    <Dialog open={!!confirming} fullWidth maxWidth="lg" onClose={busy ? undefined : () => setConfirming(null)}><DialogTitle>{updating ? '同じfreee見積書を上書き更新します' : 'freee見積書を新規作成します'}</DialogTitle><DialogContent>{confirming && <Stack spacing={2}><Alert severity="warning">接続事業所ID {confirming.companyId} のfreeeに{updating ? `上書き更新します（見積書ID：${confirming.updateTarget?.id}）。見積書は増えません。` : '新規登録します。'}顧客「{confirming.customerName}」とfreee取引先「{confirming.partnerName}」（ID {confirming.preview.settings.partnerId}） の対応を確認してください。{updating && confirming.preview.settings.deliveryLocationName && '納品場所も下記の選択値で上書きします。'}</Alert><Preview preview={confirming.preview} memo={confirming.payload?.memo ?? confirming.marker} /><Typography>保存版 {confirming.revision} を転記します。顧客へのメール送付は行いません。</Typography></Stack>}</DialogContent><DialogActions><Button disabled={busy} onClick={() => setConfirming(null)}>キャンセル</Button><Button variant="contained" disabled={busy || confirming?.digest !== saved?.digest || dirty || locked} onClick={() => void send()}>{busy ? '転記中…' : updating ? '確認した内容でfreeeを上書き更新' : '確認した内容でfreeeに新規登録'}</Button></DialogActions></Dialog>
   </Stack>
 }
 

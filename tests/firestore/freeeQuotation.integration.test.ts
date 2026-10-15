@@ -117,6 +117,33 @@ describe('delivery location quotation integration', () => {
     expect(methods).toEqual(['GET', 'PUT'])
     expect((await ref().collection('revisions').doc('1').get()).get('payload.delivery_location')).toBe('東京倉庫')
   })
+  it('retries an existing failed legacy revision once, reflects the RFQ location and retains the link', async () => {
+    const first = await save()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ quotation: { ...successfulResponse(first).quotation, delivery_location: '' } }))))
+    await send(first)
+    // Existing production records predate the explicit response location snapshot.
+    const previous = (await ref().get()).get('result') as Record<string, unknown>
+    delete previous.deliveryLocation
+    await ref().update({ result: previous })
+    await run(startSalesQuoteRevision, { expectedRevision: 1, digest: first.digest, customerPresented: false })
+    await selectLocation()
+    await db.doc('salesQuotes/rfq').update({ status: 'confirmed' })
+    await db.doc('salesQuotes/rfq/items/item').update({ confirmedAt: Timestamp.now() })
+    const next = await save(1)
+    await ref().update({ status: 'failed', error: 'Previous protection check stopped the update' })
+    expect((await ref().get()).get('previousResult.reportUrl')).toBe('https://invoice.freee.co.jp/reports/99')
+    const methods: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      methods.push(init.method ?? 'GET')
+      if (init.method) expect(JSON.parse(String(init.body)).delivery_location).toBe('東京倉庫')
+      return new Response(JSON.stringify({ quotation: { ...successfulResponse(init.method ? next : first).quotation, delivery_location: init.method ? '東京倉庫' : 'test' } }))
+    }))
+    expect((await send(next)).status).toBe('sent')
+    expect((await send(next)).status).toBe('sent')
+    expect(methods).toEqual(['GET', 'PUT'])
+    expect((await ref().get()).data()).toMatchObject({ status: 'sent', lastSentRevision: 2, error: '', result: { id: 99, verification: 'matched', deliveryLocation: '東京倉庫', reportUrl: 'https://invoice.freee.co.jp/reports/99' } })
+    expect((await ref().collection('revisions').doc('1').get()).get('payload.delivery_location')).toBeUndefined()
+  })
 })
 
 describe('freee numeric token version metadata integration', () => {

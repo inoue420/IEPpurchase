@@ -88,6 +88,7 @@ exports.startSalesQuoteRevision = (0, https_1.onCall)(options, async (request) =
                 throw new https_1.HttpsError('failed-precondition', '前回のfreee見積書IDを確認できません。');
             updateTarget = { id: previous.result.id, number: previous.result.number, payload: previous.payload,
                 total: previous.preview.total, tax: previous.preview.tax,
+                ...(previous.result.deliveryLocation !== undefined ? { deliveryLocation: previous.result.deliveryLocation } : {}),
                 ...(previous.result.contentDigest ? { contentDigest: previous.result.contentDigest } : {}) };
         }
         if (choosesMode && data.customerPresented === true)

@@ -8,7 +8,7 @@ vi.mock('firebase/firestore', async importOriginal => ({
   runTransaction: (_db: unknown, work: (tx: typeof mock) => Promise<void>) => work(mock),
   serverTimestamp: () => 'server-time',
 }))
-import { appendRfqItemEcPurchaseCandidates, createRfqItem, createRfqItems, saveRfqItemTranslation, setRfqItemArchived, setRfqItemSourcingTargets, updateRfqItem } from './rfqItemRepository'
+import { appendRfqItemEcPurchaseCandidates, createRfqItem, createRfqItems, saveRfqItemTranslation, setRfqItemArchived, setRfqItemSourcingTargets, setRfqItemSupplierResponseUnitPrices, updateRfqItem } from './rfqItemRepository'
 const input = { originalDescription: ' Bolt ', translatedDescription: '', productId: '', manufacturerId: '', manufacturerName: '', partNumber: '', productName: '', quantity: 2, supplierResponseUnitPrice: null, unit: '個', supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: true, ecPurchaseCandidates: [], requestedDeliveryDate: '2026-09-08', status: 'pending' as const, note: '' }
 describe('RFQ品目保存', () => {
   beforeEach(() => vi.clearAllMocks())
@@ -122,5 +122,54 @@ describe('RFQ品目保存', () => {
     await setRfqItemSourcingTargets('rfq-a', 'item-a', true, false)
     expect(mock.update).toHaveBeenLastCalledWith('rfqs/rfq-a/items/item-a', { supplierQuoteRequestEnabled: true, marketplaceOfferEnabled: false, updatedAt: 'server-time' })
     await expect(setRfqItemSourcingTargets('rfq-a', 'item-a', false, false)).rejects.toThrow('対応先を1つ以上選択してください。')
+  })
+})
+
+describe('仕入先PDFの単価・状態の保存', () => {
+  beforeEach(() => vi.resetAllMocks())
+
+  it.each(['pending', 'sourcing', 'candidates_listed', 'no_search_results', 'quoted'])('単価と見積取得済みを同時に保存する: %s', async status => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status }) })
+    await setRfqItemSupplierResponseUnitPrices('rfq-a', [{ itemId: 'item-a', supplierResponseUnitPrice: 12510 }])
+    expect(mock.update).toHaveBeenCalledExactlyOnceWith('rfqs/rfq-a/items/item-a', { supplierResponseUnitPrice: 12510, status: 'quoted', updatedAt: 'server-time' })
+  })
+
+  it.each(['ordered', 'received'])('発注済み・入荷済みは状態を戻さず単価を更新する: %s', async status => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status }) })
+    await setRfqItemSupplierResponseUnitPrices('rfq-a', [{ itemId: 'item-a', supplierResponseUnitPrice: 15400 }])
+    expect(mock.update).toHaveBeenCalledExactlyOnceWith('rfqs/rfq-a/items/item-a', { supplierResponseUnitPrice: 15400, status, updatedAt: 'server-time' })
+  })
+
+  it('全対象の読み取り後に更新し、選択した品目だけへ0円を含めて反映する', async () => {
+    mock.get.mockResolvedValue({ exists: () => true, data: () => ({ archivedAt: null, status: 'pending' }) })
+    await setRfqItemSupplierResponseUnitPrices('rfq-a', [{ itemId: 'item-a', supplierResponseUnitPrice: 0 }, { itemId: 'item-c', supplierResponseUnitPrice: 2300 }])
+    expect(mock.get.mock.calls.map(call => call[0])).toEqual(['rfqs/rfq-a/items/item-a', 'rfqs/rfq-a/items/item-c'])
+    expect(mock.update).toHaveBeenCalledTimes(2)
+    expect(mock.update.mock.calls.map(call => call[0])).toEqual(['rfqs/rfq-a/items/item-a', 'rfqs/rfq-a/items/item-c'])
+    expect(Math.max(...mock.get.mock.invocationCallOrder)).toBeLessThan(Math.min(...mock.update.mock.invocationCallOrder))
+    expect(mock.update.mock.calls[0][1]).toEqual({ supplierResponseUnitPrice: 0, status: 'quoted', updatedAt: 'server-time' })
+  })
+
+  it.each(['missing', 'archived', 'cancelled'])('抽出後に対象が無効になった場合は全件を保存せず失敗する: %s', async reason => {
+    mock.get.mockResolvedValueOnce({ exists: () => true, data: () => ({ archivedAt: null, status: 'pending' }) })
+      .mockResolvedValueOnce({ exists: () => reason !== 'missing', data: () => ({ archivedAt: reason === 'archived' ? 'archived' : null, status: reason === 'cancelled' ? 'cancelled' : 'pending' }) })
+    await expect(setRfqItemSupplierResponseUnitPrices('rfq-a', [{ itemId: 'item-a', supplierResponseUnitPrice: 12510 }, { itemId: 'item-b', supplierResponseUnitPrice: 15400 }])).rejects.toThrow('変更または削除')
+    expect(mock.update).not.toHaveBeenCalled()
+  })
+
+  it('空配列・重複ID・不正単価を読み取り前に拒否する', async () => {
+    await expect(setRfqItemSupplierResponseUnitPrices('rfq-a', [])).rejects.toThrow()
+    await expect(setRfqItemSupplierResponseUnitPrices('rfq-a', [{ itemId: 'item-a', supplierResponseUnitPrice: 1 }, { itemId: 'item-a', supplierResponseUnitPrice: 2 }])).rejects.toThrow('重複')
+    for (const supplierResponseUnitPrice of [-1, 1.5, NaN, 1_000_000_001]) {
+      await expect(setRfqItemSupplierResponseUnitPrices('rfq-a', [{ itemId: 'item-a', supplierResponseUnitPrice }])).rejects.toThrow('不正')
+    }
+    expect(mock.get).not.toHaveBeenCalled()
+    expect(mock.update).not.toHaveBeenCalled()
+  })
+
+  it('通信・読み取りエラーは画面へ伝え、単価と状態を書き込まない', async () => {
+    mock.get.mockRejectedValueOnce(new Error('offline'))
+    await expect(setRfqItemSupplierResponseUnitPrices('rfq-a', [{ itemId: 'item-a', supplierResponseUnitPrice: 12510 }])).rejects.toThrow('offline')
+    expect(mock.update).not.toHaveBeenCalled()
   })
 })

@@ -1,4 +1,4 @@
-import { Timestamp, collection, doc, onSnapshot, orderBy, query, runTransaction, serverTimestamp, writeBatch, type Unsubscribe } from 'firebase/firestore'
+import { Timestamp, collection, doc, onSnapshot, orderBy, query, runTransaction, serverTimestamp, type Unsubscribe } from 'firebase/firestore'
 import { firestore } from '../../firebase/firebase'
 import { ecPurchaseCandidateSchema, rfqItemSchema, rfqItemStatusAfterRakutenSearch, type RfqItemStatus } from './rfqItemSchema'
 
@@ -76,9 +76,18 @@ export async function setRfqItemSupplierResponseUnitPrices(rfqId: string, update
   if (updates.length === 0 || updates.length > 500) throw new Error('反映する品目を1〜500件選択してください。')
   if (new Set(updates.map(update => update.itemId)).size !== updates.length) throw new Error('同じ品目を重複して反映できません。')
   if (updates.some(update => !update.itemId || !Number.isSafeInteger(update.supplierResponseUnitPrice) || update.supplierResponseUnitPrice < 0 || update.supplierResponseUnitPrice > 1_000_000_000)) throw new Error('仕入先回答単価が不正です。')
-  const batch = writeBatch(firestore)
-  for (const update of updates) batch.update(doc(firestore, 'rfqs', rfqId, 'items', update.itemId), { supplierResponseUnitPrice: update.supplierResponseUnitPrice, updatedAt: serverTimestamp() })
-  await batch.commit()
+  await runTransaction(firestore, async transaction => {
+    const targets = []
+    for (const update of updates) {
+      const ref = doc(firestore, 'rfqs', rfqId, 'items', update.itemId)
+      const current = await transaction.get(ref)
+      if (!current.exists() || current.data().archivedAt != null || current.data().status === 'cancelled') throw new Error('品目が変更または削除されています。再読込してください。')
+      const currentStatus = current.data().status
+      const status: RfqItemStatus = currentStatus === 'ordered' || currentStatus === 'received' ? currentStatus : 'quoted'
+      targets.push({ ref, supplierResponseUnitPrice: update.supplierResponseUnitPrice, status })
+    }
+    for (const target of targets) transaction.update(target.ref, { supplierResponseUnitPrice: target.supplierResponseUnitPrice, status: target.status, updatedAt: serverTimestamp() })
+  })
 }
 export async function appendRfqItemEcPurchaseCandidates(rfqId: string, itemId: string, candidates: EcPurchaseCandidate[], searchedSource?: Pick<RfqItemInput, 'manufacturerName' | 'partNumber'>): Promise<number> {
   const parsed = ecPurchaseCandidateSchema.array().max(10).parse(candidates)

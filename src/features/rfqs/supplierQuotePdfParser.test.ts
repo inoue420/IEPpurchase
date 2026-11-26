@@ -1,7 +1,58 @@
 import { describe, expect, it } from 'vitest'
-import { matchSupplierQuotePdfRows, normalizePartNumber, parseSupplierQuotePdfText } from './supplierQuotePdfParser'
+import { matchSupplierQuotePdfRows, normalizePartNumber, parseSupplierQuotePdfPage, parseSupplierQuotePdfText } from './supplierQuotePdfParser'
 
 describe('仕入先見積PDFのテキスト解析', () => {
+  function cell(str: string, x: number, y: number, width: number) {
+    return { str, transform: [10, 0, 0, 10, x, y], width, height: 10 }
+  }
+  const compactHead = [
+    cell('品番', 90, 300, 20), cell('品名', 180, 300, 20), cell('定価', 270, 300, 20),
+    cell('参考売価', 320, 300, 40), cell('仕切', 380, 300, 20), cell('単価', 400, 300, 20), cell('備考', 490, 300, 20),
+  ]
+
+  it('画像の12明細を表の位置から抽出し、RFQに見える7品番と仕切単価が一致する', () => {
+    const quote = [
+      ['F-01356', 'ピンネイルＳ６－１２', '7,000', '4,900', '4,200', '廃盤予定'],
+      ['F-01369', 'ピンネイルＳ６－１５', '7,000', '4,900', '4,200'],
+      ['F-01372', 'ピンネイルＳ６－１８', '7,200', '5,040', '4,300'],
+      ['F-00013', 'ピンネイルＰ１８', '1,200', '840', '700'],
+      ['F-01385', 'ピンネイルＳ６－２２', '7,900', '5,530', '4,700', '廃盤予定'],
+      ['F-01398', 'ピンネイルＳ６－２５', '8,900', '6,230', '5,300', '廃盤予定'],
+      ['F-00026', 'ピンネイルＰ２５', '1,300', '910', '750'],
+      ['F-01819', 'ピンネイルＰ３０', '1,400', '980', '800'],
+      ['F-00055', 'ピンネイルＰ３５', '1,500', '1,050', '900'],
+      ['F-02088', 'ピンネイルＰ４５', '1,600', '1,120', '950'],
+      ['F-02136', 'ピンネイルＰ５０', '1,900', '1,330', '1,100'],
+      ['VC004GZ', '充電式集じん機', '93,800', '65,660', '59,040'],
+    ]
+    const cells = quote.flatMap(([part, name, list, reference, net, note], index) => {
+      const y = 282 - index * 16
+      return [cell(String(index + 1), 48, y, 12), cell(part, 72, y, 45), cell(name, 132, y, 105),
+        ...[list, reference, net].map((str, i) => cell(str, 307 + 60 * i - str.length * 5, y + 1, str.length * 5)),
+        cell(note ?? '', 432, y, 40)]
+    })
+    const rows = parseSupplierQuotePdfPage([...compactHead, ...cells].reverse(), '')
+    expect(rows).toEqual(quote.map(([partNumber, , , , net]) => ({ partNumber, supplierResponseUnitPrice: Number(net.replaceAll(',', '')) })))
+    const items = quote.slice(0, 7).map(([partNumber]) => ({ partNumber }))
+    expect(matchSupplierQuotePdfRows(items, rows).map(({ row }) => row.supplierResponseUnitPrice)).toEqual([4200, 4200, 4300, 700, 4700, 5300, 750])
+  })
+
+  it('簡易表の仕切単価が空欄・不正なら、隣の金額や数字の備考を採用しない', () => {
+    const row = [cell('1', 50, 282, 5), cell('F-01356', 72, 282, 40), cell('ピン 6 12', 132, 282, 55),
+      cell('7,000', 283, 282, 24), cell('4,900', 343, 282, 24), cell('123', 432, 282, 15)]
+    expect(parseSupplierQuotePdfPage([...compactHead, ...row], '')).toEqual([])
+    expect(parseSupplierQuotePdfPage([...compactHead, ...row, cell('4,2', 410, 282, 17)], '')).toEqual([])
+    expect(parseSupplierQuotePdfPage([...compactHead, ...row, cell('4,200 廃盤予定', 402, 282, 64)], '')).toEqual([
+      { partNumber: 'F-01356', supplierResponseUnitPrice: 4200 },
+    ])
+  })
+
+  it('従来書式のページでは従来の金額・数量列を読む', () => {
+    expect(parseSupplierQuotePdfPage([], '1 TEST 商品 7,000 4,900 9,800 4,200 8,400 2')).toEqual([
+      { partNumber: 'TEST', supplierResponseUnitPrice: 4200 },
+    ])
+  })
+
   it('品番と仕切単価を抽出する', () => {
     const text = '1 MC300DZ ７６ミリ充電式コンパクトカッタ 25,000 17,500 52,500 15,750 47,250 3\n2 A-61715 バッテリＢＬ１８２０Ｂ 14,700 10,290 30,870 8,800 26,400 3'
     expect(parseSupplierQuotePdfText(text)).toEqual([{ partNumber: 'MC300DZ', supplierResponseUnitPrice: 15750 }, { partNumber: 'A-61715', supplierResponseUnitPrice: 8800 }])

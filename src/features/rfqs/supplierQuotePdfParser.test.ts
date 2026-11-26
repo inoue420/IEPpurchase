@@ -10,6 +10,21 @@ describe('仕入先見積PDFのテキスト解析', () => {
     cell('参考売価', 320, 300, 40), cell('仕切', 380, 300, 20), cell('単価', 400, 300, 20), cell('備考', 490, 300, 20),
   ]
 
+  it.each([90, 180, 270])('ページ回転 %i 度でも備考付きの仕切単価を読み、上の行を優先する', rotation => {
+    const cells = [...compactHead, ...[4200, 3900].flatMap((amount, index) => {
+      const y = 282 - 16 * index
+      return [cell(String(index + 1), 48, y, 5), cell('F-01356', 72, y, 42), cell('ピンネイル', 132, y, 50),
+        cell('7,000', 282, y, 25), cell('4,900', 342, y, 25), cell(amount.toLocaleString('en-US'), 402, y, 25), cell('廃盤予定', 432, y, 40)]
+    })].reverse().map(item => {
+      const [, , , , x, y] = item.transform
+      const origin = rotation === 90 ? [500 - y, x] : rotation === 180 ? [660 - x, 500 - y] : [y, 660 - x]
+      return { ...item, transform: [...item.transform.slice(0, 4), ...origin] }
+    })
+    const rows = parseSupplierQuotePdfPage(cells, '', rotation)
+    expect(rows.map(row => row.supplierResponseUnitPrice)).toEqual([4200, 3900])
+    expect(matchSupplierQuotePdfRows([{ partNumber: 'F-01356' }], rows)[0].row.supplierResponseUnitPrice).toBe(4200)
+  })
+
   it('画像の12明細を表の位置から抽出し、RFQに見える7品番と仕切単価が一致する', () => {
     const quote = [
       ['F-01356', 'ピンネイルＳ６－１２', '7,000', '4,900', '4,200', '廃盤予定'],

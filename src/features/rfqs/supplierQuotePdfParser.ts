@@ -25,26 +25,41 @@ interface PdfTextItem {
   height: number
 }
 
-function visualLines(items: PdfTextItem[]): PdfTextItem[][] {
-  const sorted = items.filter(item => item.str.trim()).sort((a, b) => b.transform[5] - a.transform[5])
-  const lines: PdfTextItem[][] = []
+// Use displayed page axes, with y increasing upwards. A common page offset
+// cancels out when we compare text positions with the column headings.
+function displayedCell(item: PdfTextItem, rotation: number) {
+  const [, , , , x, y] = item.transform
+  const cell = { str: item.str, width: item.width, height: item.height }
+  switch (rotation) {
+    case 90: return { ...cell, x: y, y: -x }
+    case 180: return { ...cell, x: -x, y: -y }
+    case 270: return { ...cell, x: -y, y: x }
+    default: return { ...cell, x, y }
+  }
+}
+
+type DisplayedCell = ReturnType<typeof displayedCell>
+
+function visualLines(items: PdfTextItem[], rotation: number): DisplayedCell[][] {
+  const sorted = items.filter(item => item.str.trim()).map(item => displayedCell(item, rotation)).sort((a, b) => b.y - a.y)
+  const lines: DisplayedCell[][] = []
   for (const item of sorted) {
     const line = lines.at(-1)
-    if (line && Math.abs(line[0].transform[5] - item.transform[5]) <= Math.min(line[0].height, item.height) * 0.4) {
+    if (line && Math.abs(line[0].y - item.y) <= Math.min(line[0].height, item.height) * 0.4) {
       line.push(item)
     } else {
       lines.push([item])
     }
   }
-  return lines.map(line => line.sort((a, b) => a.transform[4] - b.transform[4]))
+  return lines.map(line => line.sort((a, b) => a.x - b.x))
 }
 
-function compactHeader(line: PdfTextItem[]) {
+function compactHeader(line: DisplayedCell[]) {
   const headings = ['品番', '品名', '定価', '参考売価', '仕切単価']
   const characters = line.flatMap(item => {
     const chars = Array.from(item.str.normalize('NFKC'))
     return chars.map((char, index) => ({
-      char, x: item.transform[4] + item.width * (index + 0.5) / chars.length,
+      char, x: item.x + item.width * (index + 0.5) / chars.length,
     })).filter(({ char }) => char.trim())
   })
   const labels = characters.map(({ char }) => char).join('')
@@ -58,8 +73,8 @@ function compactHeader(line: PdfTextItem[]) {
   return { left: (reference + net) / 2, right: net + (net - reference) / 2, priceStart: list - (reference - list) / 2 }
 }
 
-export function parseSupplierQuotePdfPage(items: PdfTextItem[], text: string): SupplierQuotePdfRow[] {
-  const lines = visualLines(items)
+export function parseSupplierQuotePdfPage(items: PdfTextItem[], text: string, rotation = 0): SupplierQuotePdfRow[] {
+  const lines = visualLines(items, rotation)
   let columns: ReturnType<typeof compactHeader> = null
   const rows: SupplierQuotePdfRow[] = []
   for (const line of lines) {
@@ -72,13 +87,13 @@ export function parseSupplierQuotePdfPage(items: PdfTextItem[], text: string): S
     }
     if (!columns) continue
     const { left, right, priceStart } = columns
-    const description = line.filter(item => item.transform[4] < priceStart).map(item => item.str.trim()).join(' ')
+    const description = line.filter(item => item.x < priceStart).map(item => item.str.trim()).join(' ')
     const match = description.match(/^\s*[0-9０-９]+\s+(\S+)\s+\S/)
     if (!match) continue
-    const fragments = line.filter(item => item.transform[4] >= left && item.transform[4] < right)
+    const fragments = line.filter(item => item.x >= left && item.x < right)
       .map(item => {
         const str = item.str.trim()
-        if (item.transform[4] + item.width <= right) return str
+        if (item.x + item.width <= right) return str
         // PDF.js can merge the right-aligned price and the adjacent note into one run.
         return str.match(/^(\S+)\s+\S/)?.[1]
       })

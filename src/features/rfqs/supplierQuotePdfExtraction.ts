@@ -9,10 +9,11 @@ export async function extractSupplierQuotePdf(file: File, password: string): Pro
   try {
     const document = await getDocument({ data: new Uint8Array(await file.arrayBuffer()), password }).promise
     const pages = await Promise.all(Array.from({ length: document.numPages }, async (_, index) => {
-      const content = await (await document.getPage(index + 1)).getTextContent()
+      const page = await document.getPage(index + 1)
+      const content = await page.getTextContent()
       const items = content.items.filter(item => 'str' in item)
       const text = items.map(item => `${item.str}${item.hasEOL ? '\n' : ' '}`).join('')
-      return { text, rows: parseSupplierQuotePdfPage(items, text) }
+      return { text, rows: parseSupplierQuotePdfPage(items, text, page.rotate) }
     }))
     await document.destroy()
     return { rows: pages.flatMap(page => page.rows), text: pages.map(page => page.text).join('\n') }

@@ -1,19 +1,15 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Alert, Box, Button, CircularProgress, Stack, Typography } from '@mui/material'
 import { httpsCallable } from 'firebase/functions'
 import { firebaseFunctions } from '../../firebase/firebase'
+import { useFreeeConnectionStatus } from './useFreeeConnectionStatus'
 
 interface BeginFreeeOAuthResult { authorizationUrl: string }
-interface FreeeConnectionStatus { connected: boolean }
 
 export function FreeeIntegrationPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [connected, setConnected] = useState<boolean | null>(null)
-  useEffect(() => {
-    const status = httpsCallable<unknown, FreeeConnectionStatus>(firebaseFunctions, 'getFreeeConnectionStatus')
-    void status().then(({ data }) => setConnected(data.connected)).catch(() => setConnected(false))
-  }, [])
+  const status = useFreeeConnectionStatus()
   async function startAuthorization() {
     setLoading(true); setError(null)
     try {
@@ -27,9 +23,10 @@ export function FreeeIntegrationPage() {
   }
   return <Box sx={{ p: 3, maxWidth: 760 }}><Stack spacing={2}>
     <Typography variant="h5">freee連携</Typography>
-    {connected === null
-      ? <Alert severity="info">連携状態を確認中です…</Alert>
-      : <Alert severity={connected ? 'success' : 'warning'}>{connected ? '連携中：freeeへの接続情報が設定されています。' : '未連携：freeeへの接続情報が設定されていません。'}</Alert>}
+    {status === 'checking' && <Alert severity="info">連携状態を確認中です…</Alert>}
+    {status === 'connected' && <Alert severity="success">連携中です。</Alert>}
+    {status === 'disconnected' && <Alert severity="warning">freeeが未連携、または認証期限が切れています。「freeeで連携を許可する」から認可してください。</Alert>}
+    {status === 'unavailable' && <Alert severity="warning">freeeの連携状態を確認できませんでした。通信状況を確認してページを再読み込みしてください。</Alert>}
     <Typography>freeeで対象事業所を選択して連携を許可します。認可コードとトークンはブラウザやFirestoreには保存しません。</Typography>
     {error && <Alert severity="error">{error}</Alert>}
     <Box><Button variant="contained" onClick={startAuthorization} disabled={loading} startIcon={loading ? <CircularProgress size={18} /> : undefined}>freeeで連携を許可する</Button></Box>

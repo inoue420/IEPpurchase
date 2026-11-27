@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { initializeTestEnvironment, assertFails, assertSucceeds, type RulesTestEnvironment } from '@firebase/rules-unit-testing'
-import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs } from 'firebase/firestore'
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp } from 'firebase/firestore'
 import type { QuoteSettings, QuotePreview, FreeeQuotePayload } from '../../functions/src/salesQuoteModel'
 import type { OAuthTokenMetadataStore, OAuthTokenSecretManager } from '../../functions/src/oauthTokenStore'
 
@@ -14,6 +14,9 @@ const { SecretManagerServiceClient } = functionRequire('@google-cloud/secret-man
 interface Saved { revision: number; digest: string; preview: QuotePreview; payload: FreeeQuotePayload; status: string; marker: string; editing?: boolean; operation?: string }
 type Callable = { run: (request: { auth?: { uid: string }; data: Record<string, unknown> }) => Promise<Saved & { result?: { id: number }; status: string }> }
 const { saveSalesQuotePricing, sendFreeeQuotation, reconcileFreeeQuotation, startSalesQuoteRevision } = functionRequire('./lib/freeeQuotation.js') as Record<string, Callable>
+const { changeSalesQuoteTranslation } = functionRequire('./lib/salesQuoteTranslation.js') as {
+  changeSalesQuoteTranslation: { run: (request: { auth?: { uid: string }; data: Record<string, unknown> }) => Promise<void> }
+}
 const { freeeTokenMetadata, FREEE_TOKEN_METADATA_PATH } = functionRequire('./lib/freeeTokenMetadata.js') as {
   freeeTokenMetadata: (parent: string) => OAuthTokenMetadataStore
   FREEE_TOKEN_METADATA_PATH: string
@@ -56,6 +59,91 @@ beforeEach(async () => {
   vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Unexpected HTTP request') }))
 })
 afterAll(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); await env?.cleanup(); if (app) await deleteApp(app) })
+
+describe('sales quote translation transaction', () => {
+  const rfqId = 'translation-rfq'
+  const quote = () => db.doc(`salesQuotes/${rfqId}`)
+  const rfqItem = (lineNo: number) => db.doc(`rfqs/${rfqId}/items/line-${lineNo}`)
+  const quoteItem = (lineNo: number) => quote().collection('items').doc(`line-${lineNo}`)
+  const versions = async () => (await quote().collection('items').get()).docs.map(item => {
+    const updatedAt = item.get('updatedAt') as InstanceType<typeof Timestamp>
+    return [item.id, `${updatedAt.seconds}:${updatedAt.nanoseconds}`]
+  })
+  const change = (action: string, expectedItems?: string[][]) => changeSalesQuoteTranslation.run({ auth: { uid: 'user' }, data: { rfqId, action, expectedItems } })
+  async function seed(count: number) {
+    const batch = db.batch()
+    batch.set(db.doc(`rfqs/${rfqId}`), { status: 'quoting' })
+    for (let lineNo = 1; lineNo <= count; lineNo++) {
+      batch.set(rfqItem(lineNo), { lineNo, partNumber: `N-${lineNo}`, originalDescription: 'ナット', translatedDescription: 'Nut', quantity: 2, unit: 'pcs', archivedAt: null, status: 'pending' })
+    }
+    await batch.commit()
+  }
+
+  it.each([25, 100])('atomically imports and confirms %i lines without the client rule limit', async count => {
+    await seed(count)
+    await change('import')
+    const rows = await quote().collection('items').get()
+    expect(rows.size).toBe(count)
+    expect((await quoteItem(count).get()).data()).toMatchObject({ lineNo: count, rfqId, outputDescription: 'Nut', confirmedAt: null })
+    await change('confirm', await versions())
+    const confirmedAt = (await quote().get()).get('confirmedAt') as InstanceType<typeof Timestamp>
+    expect((await quoteItem(count).get()).get('confirmedAt')).toEqual(confirmedAt)
+    await change('reopen', await versions())
+    expect((await quote().get()).get('status')).toBe('draft')
+    expect((await quoteItem(count).get()).get('confirmedAt')).toBeNull()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('lists the exact invalid lines and fields, then allows an empty translation to be completed in the quote', async () => {
+    await seed(2)
+    await rfqItem(2).update({ originalDescription: '', quantity: 0, unit: '', translatedDescription: 'a'.repeat(5001) })
+    await expect(change('import')).rejects.toMatchObject({ code: 'failed-precondition', message: expect.stringMatching(/No\. 2（品番 N-2）.*品目説明（原文）.*数量.*単位.*翻訳説明/) })
+    expect((await quote().get()).exists).toBe(false)
+    expect((await quote().collection('items').get()).empty).toBe(true)
+    await rfqItem(2).update({ originalDescription: 'ワッシャー', quantity: 1, unit: 'pcs', translatedDescription: '' })
+    await change('import')
+    const before = await versions()
+    await expect(change('confirm', before)).rejects.toThrow('明細 No. 2（品番 N-2）')
+    const client = env.authenticatedContext('user').firestore()
+    await assertSucceeds(updateDoc(doc(client, `salesQuotes/${rfqId}/items/line-2`), { outputDescription: 'Washer', updatedAt: serverTimestamp() }))
+    await expect(change('confirm', before)).rejects.toMatchObject({ code: 'aborted' })
+    await change('confirm', await versions())
+    expect((await quoteItem(2).get()).data()).toMatchObject({ translatedDescription: '', outputDescription: 'Washer' })
+  })
+
+  it('retains created timestamps and saved revisions and excludes cancelled and archived items on reimport', async () => {
+    await seed(3)
+    await change('import')
+    const createdAt = (await quoteItem(1).get()).get('createdAt')
+    const saved = quote().collection('freeeExports').doc('current')
+    const savedVersion = saved.collection('revisions').doc('1')
+    await saved.set({ status: 'sent', editing: false })
+    await savedVersion.set({ status: 'sent', description: 'Saved version' })
+    const before = await versions()
+    await expect(change('reimport', before)).rejects.toThrow('改訂版を作成して編集')
+    expect(await versions()).toEqual(before)
+    await saved.set({ status: 'draft', editing: true })
+    await rfqItem(1).update({ translatedDescription: 'Updated nut' })
+    await rfqItem(2).update({ status: 'cancelled' })
+    await rfqItem(3).update({ archivedAt: Timestamp.now() })
+    await change('reimport', before)
+    expect((await quote().collection('items').get()).size).toBe(1)
+    expect((await quoteItem(1).get()).data()).toMatchObject({ createdAt, outputDescription: 'Updated nut' })
+    expect((await savedVersion.get()).data()).toEqual({ status: 'sent', description: 'Saved version' })
+  })
+
+  it('requires authentication and identifies unregistered, cancelled and over-limit RFQs', async () => {
+    await expect(changeSalesQuoteTranslation.run({ data: { rfqId, action: 'import' } })).rejects.toMatchObject({ code: 'unauthenticated' })
+    await seed(0)
+    await expect(change('import')).rejects.toThrow('品目を追加')
+    await seed(1)
+    await rfqItem(1).update({ status: 'cancelled' })
+    await expect(change('import')).rejects.toThrow('削除済みまたはキャンセル')
+    await seed(101)
+    await expect(change('import')).rejects.toThrow('100明細まで')
+    expect((await quote().get()).exists).toBe(false)
+  })
+})
 
 describe('delivery location quotation integration', () => {
   const location = { deliveryLocationId: 'a'.repeat(64), deliveryLocationName: '東京倉庫' }

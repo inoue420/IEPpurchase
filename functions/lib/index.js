@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.startSalesQuoteRevision = exports.searchFreeePartners = exports.reconcileFreeeQuotation = exports.sendFreeeQuotation = exports.saveSalesQuotePricing = exports.getFreeeConnectionStatus = exports.freeeOAuthCallback = exports.beginFreeeOAuth = exports.extractVisionOcrText = exports.translateAzureText = exports.translateGoogleText = exports.searchRakutenItems = exports.cancelSourcingDecision = exports.selectSourcingCandidate = void 0;
+exports.changeSalesQuoteTranslation = exports.startSalesQuoteRevision = exports.searchFreeePartners = exports.reconcileFreeeQuotation = exports.sendFreeeQuotation = exports.saveSalesQuotePricing = exports.getFreeeConnectionStatus = exports.freeeOAuthCallback = exports.beginFreeeOAuth = exports.extractVisionOcrText = exports.translateAzureText = exports.translateGoogleText = exports.searchRakutenItems = exports.cancelSourcingDecision = exports.selectSourcingCandidate = void 0;
 const app_1 = require("firebase-admin/app");
 const firestore_1 = require("firebase-admin/firestore");
 const https_1 = require("firebase-functions/v2/https");
@@ -126,3 +126,5 @@ Object.defineProperty(exports, "sendFreeeQuotation", { enumerable: true, get: fu
 Object.defineProperty(exports, "reconcileFreeeQuotation", { enumerable: true, get: function () { return freeeQuotation_1.reconcileFreeeQuotation; } });
 Object.defineProperty(exports, "searchFreeePartners", { enumerable: true, get: function () { return freeeQuotation_1.searchFreeePartners; } });
 Object.defineProperty(exports, "startSalesQuoteRevision", { enumerable: true, get: function () { return freeeQuotation_1.startSalesQuoteRevision; } });
+var salesQuoteTranslation_1 = require("./salesQuoteTranslation");
+Object.defineProperty(exports, "changeSalesQuoteTranslation", { enumerable: true, get: function () { return salesQuoteTranslation_1.changeSalesQuoteTranslation; } });

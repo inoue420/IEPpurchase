@@ -1,7 +1,6 @@
-import { Timestamp, collection, doc, getDoc, onSnapshot, runTransaction, serverTimestamp, writeBatch, type Unsubscribe } from 'firebase/firestore'
+import { Timestamp, collection, doc, onSnapshot, runTransaction, serverTimestamp, type Unsubscribe } from 'firebase/firestore'
 import { httpsCallable } from 'firebase/functions'
 import { firestore, firebaseFunctions } from '../../firebase/firebase'
-import type { RfqItem } from '../rfqs/rfqItemRepository'
 
 export type SalesQuoteTranslationStatus = 'draft' | 'confirmed'
 export interface SalesQuoteTranslationItem {
@@ -56,35 +55,18 @@ export function subscribeSalesQuote(rfqId: string, change: (quote: SalesQuoteTra
   }, fail)
 }
 
-async function assertTranslationEditable(rfqId: string): Promise<void> {
-  const saved = await getDoc(exportRef(rfqId))
-  if (saved.exists() && !(saved.get('editing') === true && saved.get('status') === 'draft')) throw new Error('「改訂版を作成して編集」から編集を開始してください。保存済みの見積は履歴に保持します。')
+function itemVersions(items: SalesQuoteTranslationItem[]): [string, string][] {
+  return items.map(({ id, updatedAt }) => [id, updatedAt ? `${updatedAt.seconds}:${updatedAt.nanoseconds}` : ''])
 }
 
-export async function prepareSalesQuoteTranslation(rfqId: string, rfqItems: RfqItem[], quote: SalesQuoteTranslation | null, existingItems: SalesQuoteTranslationItem[]): Promise<void> {
-  const active = rfqItems.filter(item => item.archivedAt === null && item.status !== 'cancelled')
-  if (active.length === 0) throw new Error('取り込めるRFQ品目がありません。')
-  if (quote) await assertTranslationEditable(rfqId)
-  const batch = writeBatch(firestore)
-  if (quote) batch.update(quoteRef(rfqId), { status: 'draft', confirmedAt: null, updatedAt: serverTimestamp() })
-  else batch.set(quoteRef(rfqId), { rfqId, status: 'draft', confirmedAt: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() })
-  const existingIds = new Set(existingItems.map(item => item.id))
-  const activeIds = new Set(active.map(item => item.id))
-  existingItems.filter(item => !activeIds.has(item.id)).forEach(item => batch.delete(itemRef(rfqId, item.id)))
-  active.forEach(item => {
-    const value = { rfqId, rfqItemId: item.id, lineNo: item.lineNo, partNumber: item.partNumber, quantity: item.quantity, unit: item.unit, originalDescription: item.originalDescription, translatedDescription: item.translatedDescription, outputDescription: item.translatedDescription, confirmedAt: null, updatedAt: serverTimestamp() }
-    if (existingIds.has(item.id)) batch.update(itemRef(rfqId, item.id), value)
-    else batch.set(itemRef(rfqId, item.id), { ...value, createdAt: serverTimestamp() })
-  })
-  await batch.commit()
+export async function prepareSalesQuoteTranslation(rfqId: string, items: SalesQuoteTranslationItem[] | null): Promise<void> {
+  await httpsCallable(firebaseFunctions, 'changeSalesQuoteTranslation')(items
+    ? { rfqId, action: 'reimport', expectedItems: itemVersions(items) }
+    : { rfqId, action: 'import' })
 }
 
-export async function reopenSalesQuoteTranslation(rfqId: string, items: SalesQuoteTranslationItem[]): Promise<void> {
-  await assertTranslationEditable(rfqId)
-  const batch = writeBatch(firestore)
-  batch.update(quoteRef(rfqId), { status: 'draft', confirmedAt: null, updatedAt: serverTimestamp() })
-  items.forEach(item => batch.update(itemRef(rfqId, item.id), { confirmedAt: null, updatedAt: serverTimestamp() }))
-  await batch.commit()
+export async function setSalesQuoteConfirmation(rfqId: string, items: SalesQuoteTranslationItem[], confirm: boolean): Promise<void> {
+  await httpsCallable(firebaseFunctions, 'changeSalesQuoteTranslation')({ rfqId, action: confirm ? 'confirm' : 'reopen', expectedItems: itemVersions(items) })
 }
 
 export async function updateSalesQuoteOutput(rfqId: string, itemId: string, outputDescription: string): Promise<void> {
@@ -96,12 +78,4 @@ export async function updateSalesQuoteOutput(rfqId: string, itemId: string, outp
     if (!quote.exists() || quote.data().status !== 'draft') throw new Error('確定済み販売見積は編集できません。')
     transaction.update(itemRef(rfqId, itemId), { outputDescription: output, updatedAt: serverTimestamp() })
   })
-}
-
-export async function confirmSalesQuoteTranslation(rfqId: string, items: SalesQuoteTranslationItem[]): Promise<void> {
-  if (items.some(item => !item.outputDescription.trim())) throw new Error('すべての品目に見積用の出力文を入力してください。')
-  const batch = writeBatch(firestore)
-  batch.update(quoteRef(rfqId), { status: 'confirmed', confirmedAt: serverTimestamp(), updatedAt: serverTimestamp() })
-  items.forEach(item => batch.update(itemRef(rfqId, item.id), { confirmedAt: serverTimestamp(), updatedAt: serverTimestamp() }))
-  await batch.commit()
 }

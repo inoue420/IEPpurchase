@@ -353,17 +353,19 @@ describe('freee quotation transaction and authorization integration', () => {
     await expect(save(1)).rejects.toMatchObject({ code: 'aborted' })
     expect(fetch).not.toHaveBeenCalled()
   })
-  it('validates the new cost divisor on the server while preserving the previous saved revision', async () => {
+  it('validates cost pricing and saves its source while preserving the previous revision', async () => {
     await save()
     const previous = (await ref().collection('revisions').doc('1').get()).data()
-    const price = { ...settings.prices[0], purchaseAmount: '1000', shippingFee: '100', margin: '1.2', unitPrice: '1400' }
+    const price = { ...settings.prices[0], purchaseAmount: '1000', purchaseAmountSource: 'supplier', shippingFee: '100', margin: '1.2', unitPrice: '1400' }
     for (const invalid of [{ ...price, unitPrice: '1300' }, { ...price, margin: '2' }, { ...price, margin: '2.1' }]) {
       await expect(run(saveSalesQuotePricing, { expectedRevision: 1, settings: { ...settings, prices: [invalid] } })).rejects.toMatchObject({ code: 'invalid-argument' })
     }
     expect((await ref().get()).get('revision')).toBe(1)
     const next = await run(saveSalesQuotePricing, { expectedRevision: 1, settings: { ...settings, prices: [price] } })
     expect(next.preview).toMatchObject({ subtotal: 2800, tax: 280, total: 3080 })
+    expect((await ref().get()).get('preview.settings.prices')).toEqual([price])
     expect(next.payload.lines[0]).toMatchObject({ unit_price: '1400', tax_rate: 10 })
+    expect(next.payload.lines[0]).not.toHaveProperty('purchaseAmountSource')
     expect((await ref().collection('revisions').doc('1').get()).data()).toEqual(previous)
     expect(fetch).not.toHaveBeenCalled()
   })

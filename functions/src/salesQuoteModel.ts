@@ -1,9 +1,11 @@
 // Pure model shared by the browser preview and the server. Money is JPY.
 import { deliveryLocationName } from './deliveryLocationModel'
 export type Fraction = 'omit' | 'round' | 'round_up'
+export type PurchaseAmountSource = 'ec' | 'supplier' | 'manual'
 export interface QuotePrice {
   rfqItemId: string; purchaseAmount: string; shippingFee: string; margin: string
   unitPrice: string; taxRate: 0 | 8 | 10; reducedTaxRate: boolean
+  purchaseAmountSource?: PurchaseAmountSource
 }
 export interface QuoteSettings {
   deliveryLocationId?: string; deliveryLocationName?: string
@@ -76,6 +78,7 @@ export function parseQuoteSettings(value: unknown): QuoteSettings {
   const prices = d.prices.map(value => {
     const p = record(value)
     const purchaseAmount = optionalMoney(p.purchaseAmount, '購入金額')
+    const purchaseAmountSource = p.purchaseAmountSource === undefined ? undefined : choice(p.purchaseAmountSource, ['ec', 'supplier', 'manual'] as const, '購入金額の出所')
     const shippingFee = optionalMoney(p.shippingFee, '送料')
     const margin = p.margin === undefined ? '1.2' : text(p.margin, 'マージン', 8)
     if (!/^\d+(\.\d{1,3})?$/.test(margin) || Number(margin) <= 0 || Number(margin) >= 2) throw new Error('マージンは0より大きく2未満、小数3桁以内で入力してください。')
@@ -84,7 +87,7 @@ export function parseQuoteSettings(value: unknown): QuoteSettings {
     if (purchaseAmount && calculateSalesUnitPrice(purchaseAmount, shippingFee, margin) !== unitPrice) throw new Error('販売単価は（購入金額＋送料）÷（2−マージン）を100円単位に丸めた金額と一致させてください。')
     const taxRate = choice(p.taxRate, [0, 8, 10] as const, '税率')
     if (typeof p.reducedTaxRate !== 'boolean' || (p.reducedTaxRate && taxRate !== 8)) throw new Error('軽減税率は8%のみ指定できます。')
-    return { rfqItemId: text(p.rfqItemId, '品目ID', 128), purchaseAmount, shippingFee, margin, unitPrice, taxRate, reducedTaxRate: p.reducedTaxRate }
+    return { rfqItemId: text(p.rfqItemId, '品目ID', 128), purchaseAmount, shippingFee, margin, unitPrice, taxRate, reducedTaxRate: p.reducedTaxRate, ...(purchaseAmount && purchaseAmountSource ? { purchaseAmountSource } : {}) }
   })
   if (new Set(prices.map(p => p.rfqItemId)).size !== prices.length) throw new Error('明細が重複しています。')
   if (typeof d.translationsReviewed !== 'boolean') throw new Error('翻訳確認の指定が不正です。')

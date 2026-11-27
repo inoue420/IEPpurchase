@@ -72,6 +72,7 @@ function parseQuoteSettings(value) {
     const prices = d.prices.map(value => {
         const p = record(value);
         const purchaseAmount = optionalMoney(p.purchaseAmount, '購入金額');
+        const purchaseAmountSource = p.purchaseAmountSource === undefined ? undefined : choice(p.purchaseAmountSource, ['ec', 'supplier', 'manual'], '購入金額の出所');
         const shippingFee = optionalMoney(p.shippingFee, '送料');
         const margin = p.margin === undefined ? '1.2' : text(p.margin, 'マージン', 8);
         if (!/^\d+(\.\d{1,3})?$/.test(margin) || Number(margin) <= 0 || Number(margin) >= 2)
@@ -84,7 +85,7 @@ function parseQuoteSettings(value) {
         const taxRate = choice(p.taxRate, [0, 8, 10], '税率');
         if (typeof p.reducedTaxRate !== 'boolean' || (p.reducedTaxRate && taxRate !== 8))
             throw new Error('軽減税率は8%のみ指定できます。');
-        return { rfqItemId: text(p.rfqItemId, '品目ID', 128), purchaseAmount, shippingFee, margin, unitPrice, taxRate, reducedTaxRate: p.reducedTaxRate };
+        return { rfqItemId: text(p.rfqItemId, '品目ID', 128), purchaseAmount, shippingFee, margin, unitPrice, taxRate, reducedTaxRate: p.reducedTaxRate, ...(purchaseAmount && purchaseAmountSource ? { purchaseAmountSource } : {}) };
     });
     if (new Set(prices.map(p => p.rfqItemId)).size !== prices.length)
         throw new Error('明細が重複しています。');
